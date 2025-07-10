@@ -41,7 +41,7 @@ jobs:
           ssh.connect(hostname=host, username=user, password=password)
 
           stdin, stdout, stderr = ssh.exec_command("""
-            cd /home/$user/ваш_проект &&
+            cd /root/promo_backend &&
             git pull origin main &&
 
             source venv/bin/activate &&
