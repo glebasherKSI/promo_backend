@@ -1,12 +1,12 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
+from typing import List, Optional, Literal
 import gspread
 import os
 import uuid
 from datetime import datetime, date, timedelta
 import calendar
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 import pandas as pd
 
 
@@ -39,6 +39,16 @@ app.add_middleware(
 )
 
 # Pydantic модели
+class InfoChannelInput(BaseModel):
+    id: Optional[str] = None  # None для новых каналов
+    type: str
+    start_date: str
+    name: str
+    comment: Optional[str] = ""
+    segments: str = "СНГ"
+    link: Optional[str] = ""
+    project: Optional[str] = None  # Делаем опциональным
+
 class PromoEventCreate(BaseModel):
     project: str
     promo_type: str
@@ -47,8 +57,8 @@ class PromoEventCreate(BaseModel):
     end_date: str
     name: str
     comment: Optional[str] = ""
-    segments: str
-    info_channels: dict = {}
+    segments: str = "СНГ"
+    info_channels: List[InfoChannelInput] = []  # Изменяем с dict на List[InfoChannelInput]
     link: Optional[str] = ""
 
 class PromoEvent(BaseModel):
@@ -80,15 +90,6 @@ class CalendarData(BaseModel):
     month: int
     events: List[dict]
 
-class InfoChannelInput(BaseModel):
-    id: Optional[str] = None  # None для новых каналов
-    type: str
-    start_date: str
-    name: str
-    comment: Optional[str] = ""
-    segments: str
-    link: Optional[str] = ""
-
 class PromoEventUpdate(BaseModel):
     project: str
     promo_type: str
@@ -110,6 +111,40 @@ class InfoChannelUpdate(BaseModel):
     segments: str
     promo_id: str
     link: Optional[str] = ""
+
+class InfoChannelCreate(BaseModel):
+    type: Literal["E-mail", "MSGR", "BPS", "PUSH", "SMM", "Баннер", "Страница", "Новости"]
+    project: str
+    start_date: str
+    name: str
+    comment: Optional[str] = ""
+    segments: str = "СНГ"
+    link: Optional[str] = ""
+    promo_id: Optional[str] = None
+    
+    @validator('name')
+    def name_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError('Название не может быть пустым')
+        return v.strip()
+    
+    @validator('start_date')
+    def validate_start_date(cls, v):
+        try:
+            # Проверяем, что дата в валидном ISO формате
+            datetime.fromisoformat(v.replace('Z', '+00:00'))
+            return v
+        except ValueError:
+            raise ValueError('Дата должна быть в формате ISO datetime')
+    
+    @validator('promo_id')
+    def validate_promo_id(cls, v):
+        if v:
+            try:
+                uuid.UUID(v)
+            except ValueError:
+                raise ValueError('promo_id должен быть валидным UUID')
+        return v
 
 # Модели для аутентификации
 class UserLogin(BaseModel):
@@ -274,19 +309,19 @@ async def create_event(event: PromoEventCreate):
             if not info_headers:
                 raise HTTPException(status_code=500, detail="Отсутствуют заголовки в таблице ИНФОРМИРОВАНИЕ")
             
-            for channel, channel_date in event.info_channels.items():
-                if channel_date:
+            for channel in event.info_channels:
+                if channel.start_date:  # Проверяем наличие даты
                     unique_id_info = str(uuid.uuid4())
                     info_data = {
                         'id': unique_id_info,
-                        'Информирование': channel,
-                        'Проект': event.project,
-                        'Дата старта': channel_date['start_date'],
-                        'Название': event.name,
-                        'Комментарий': event.comment,
-                        'Сегмент': event.segments,
+                        'Информирование': channel.type,
+                        'Проект': channel.project or event.project,
+                        'Дата старта': channel.start_date,
+                        'Название': channel.name,
+                        'Комментарий': channel.comment,
+                        'Сегмент': channel.segments,
                         'Идентификатор промо': unique_id,
-                        'Ссылка': event.link
+                        'Ссылка': channel.link
                     }
                     
                     # Формируем список значений для информирования
@@ -298,7 +333,7 @@ async def create_event(event: PromoEventCreate):
         return {"message": "Событие успешно создано", "id": unique_id}
         
     except Exception as e:
-        print(f"Ошибка при создании события: {str(e)}")  # Добавляем логирование
+        print(f"Ошибка при создании события: {str(e)}")
         if isinstance(e, HTTPException):
             raise e
         raise HTTPException(status_code=500, detail=f"Ошибка создания события: {str(e)}")
@@ -620,6 +655,68 @@ async def delete_channel(channel_id: str):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка удаления канала информирования: {str(e)}")
+
+@app.post("/api/channels", status_code=status.HTTP_201_CREATED)
+async def create_channel(channel: InfoChannelCreate):
+    """Создать новый канал информирования"""
+    try:
+        spreadsheet = get_google_sheets_client()
+        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
+        
+        # Создаем уникальный ID для канала
+        unique_id = str(uuid.uuid4())
+        
+        # Формируем данные канала
+        channel_data = {
+            'id': unique_id,
+            'Информирование': channel.type,
+            'Проект': channel.project,
+            'Дата старта': channel.start_date,
+            'Название': channel.name,
+            'Комментарий': channel.comment,
+            'Сегмент': channel.segments,
+            'Идентификатор промо': channel.promo_id or '',
+            'Ссылка': channel.link
+        }
+        
+        # Получаем заголовки из первой строки
+        headers = info_sheet.row_values(1)
+        if not headers:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Отсутствуют заголовки в таблице ИНФОРМИРОВАНИЕ"
+            )
+            
+        # Формируем список значений в том же порядке, что и заголовки
+        channel_row = [channel_data.get(header, '') for header in headers]
+        
+        # Добавляем новый канал
+        info_sheet.append_row(channel_row)
+        
+        return {
+            "message": "Канал информирования успешно создан",
+            "id": unique_id,
+            "channel": {
+                "id": unique_id,
+                "type": channel.type,
+                "project": channel.project,
+                "start_date": channel.start_date,
+                "name": channel.name,
+                "comment": channel.comment,
+                "segments": channel.segments,
+                "link": channel.link,
+                "promo_id": channel.promo_id
+            }
+        }
+        
+    except Exception as e:
+        print(f"Ошибка при создании канала: {str(e)}")
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Ошибка создания канала информирования: {str(e)}"
+        )
 
 @app.post("/api/auth/login")
 async def login(user_data: UserLogin):
