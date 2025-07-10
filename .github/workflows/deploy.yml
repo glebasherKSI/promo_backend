@@ -1,0 +1,60 @@
+name: 🚀 Deploy FastAPI to Server
+
+on:
+  push:
+    branches:
+      - main  # или любая другая ветка
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔐 Checkout code
+        uses: actions/checkout@v3
+
+      - name: ⚙️ Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+
+      - name: 📦 Install paramiko for SSH
+        run: |
+          pip install paramiko scp
+
+      - name: 🚀 Run deployment script
+        env:
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          python <<EOF
+          import paramiko
+          import os
+
+          host = os.getenv("SERVER_IP")
+          user = os.getenv("SERVER_USER")
+          password = os.getenv("SERVER_PASSWORD")
+
+          ssh = paramiko.SSHClient()
+          ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+          ssh.connect(hostname=host, username=user, password=password)
+
+          stdin, stdout, stderr = ssh.exec_command("""
+            cd /home/$user/ваш_проект &&
+            git pull origin main &&
+
+            source venv/bin/activate &&
+
+            pip install --upgrade pip &&
+
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt --no-cache-dir
+            fi &&
+
+            sudo systemctl restart fastapi
+          """)
+
+          print(stdout.read().decode())
+          print(stderr.read().decode())
+          EOF
