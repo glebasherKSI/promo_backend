@@ -130,12 +130,22 @@ class InfoChannelCreate(BaseModel):
     
     @validator('start_date')
     def validate_start_date(cls, v):
+        if not v:
+            return v
         try:
-            # Проверяем, что дата в валидном ISO формате
-            datetime.fromisoformat(v.replace('Z', '+00:00'))
+            # Поддержка разных форматов дат для совместимости с фронтендом
+            if 'T' in v:
+                # ISO формат с T
+                datetime.fromisoformat(v.replace('Z', '+00:00'))
+            elif ' ' in v:
+                # Формат с пробелом
+                datetime.strptime(v, '%Y-%m-%d %H:%M:%S')
+            else:
+                # Простой формат даты
+                datetime.strptime(v, '%Y-%m-%d')
             return v
         except ValueError:
-            raise ValueError('Дата должна быть в формате ISO datetime')
+            raise ValueError('Дата должна быть в формате ISO datetime, YYYY-MM-DD HH:MM:SS или YYYY-MM-DD')
     
     @validator('promo_id')
     def validate_promo_id(cls, v):
@@ -145,6 +155,10 @@ class InfoChannelCreate(BaseModel):
             except ValueError:
                 raise ValueError('promo_id должен быть валидным UUID')
         return v
+    
+    @validator('comment', 'link', pre=True)
+    def empty_str_to_none(cls, v):
+        return v if v is not None else ""
 
 # Модели для аутентификации
 class UserLogin(BaseModel):
@@ -176,15 +190,34 @@ async def root():
     return {"message": "Promo Calendar API"}
 
 def convert_date_to_iso(date_str: str) -> str:
-    """Конвертирует дату из формата DD.MM.YYYY в ISO формат"""
+    """Конвертирует дату из различных форматов в ISO формат"""
     if not date_str:
         return ""
     try:
-        # Парсим дату из строки, убирая возможное время
-        parsed_date = datetime.strptime(date_str.split()[0], "%d.%m.%Y")
+        # Убираем возможное время и пробелы
+        date_str = date_str.strip()
+        
+        # Пробуем разные форматы дат
+        if 'T' in date_str:
+            # Уже в ISO формате
+            parsed_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        elif ' ' in date_str:
+            # Формат DD.MM.YYYY HH:MM:SS или YYYY-MM-DD HH:MM:SS
+            if '.' in date_str.split()[0]:
+                parsed_date = datetime.strptime(date_str.split()[0], "%d.%m.%Y")
+            else:
+                parsed_date = datetime.strptime(date_str.split()[0], "%Y-%m-%d")
+        elif '.' in date_str:
+            # Формат DD.MM.YYYY
+            parsed_date = datetime.strptime(date_str, "%d.%m.%Y")
+        else:
+            # Формат YYYY-MM-DD
+            parsed_date = datetime.strptime(date_str, "%Y-%m-%d")
+        
         # Возвращаем в ISO формате
         return parsed_date.isoformat() + "Z"
-    except Exception:
+    except Exception as e:
+        print(f"Ошибка конвертации даты '{date_str}': {str(e)}")
         return date_str
 
 @app.get("/api/events")
@@ -277,6 +310,10 @@ async def create_event(event: PromoEventCreate):
         # Создаем уникальный ID для промо
         unique_id = str(uuid.uuid4())
         
+        # Валидация обязательных полей
+        if not event.project or not event.promo_type or not event.promo_kind or not event.name:
+            raise HTTPException(status_code=400, detail="Не все обязательные поля заполнены")
+        
         # Формируем данные промо
         promo_data = {
             'id': unique_id,
@@ -286,9 +323,9 @@ async def create_event(event: PromoEventCreate):
             'Дата старта': event.start_date,
             'Дата конца': event.end_date,
             'Название': event.name,
-            'Комментарий': event.comment,
-            'Сегмент': event.segments,
-            'Ссылка': event.link
+            'Комментарий': event.comment or '',
+            'Сегмент': event.segments or 'СНГ',
+            'Ссылка': event.link or ''
         }
         
         # Получаем заголовки из первой строки
@@ -318,10 +355,10 @@ async def create_event(event: PromoEventCreate):
                         'Проект': channel.project or event.project,
                         'Дата старта': channel.start_date,
                         'Название': channel.name,
-                        'Комментарий': channel.comment,
-                        'Сегмент': channel.segments,
+                        'Комментарий': channel.comment or '',
+                        'Сегмент': channel.segments or 'СНГ',
                         'Идентификатор промо': unique_id,
-                        'Ссылка': channel.link
+                        'Ссылка': channel.link or ''
                     }
                     
                     # Формируем список значений для информирования
@@ -663,6 +700,13 @@ async def create_channel(channel: InfoChannelCreate):
         spreadsheet = get_google_sheets_client()
         info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
         
+        # Валидация обязательных полей
+        if not channel.type or not channel.project or not channel.name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Не все обязательные поля заполнены"
+            )
+        
         # Создаем уникальный ID для канала
         unique_id = str(uuid.uuid4())
         
@@ -673,10 +717,10 @@ async def create_channel(channel: InfoChannelCreate):
             'Проект': channel.project,
             'Дата старта': channel.start_date,
             'Название': channel.name,
-            'Комментарий': channel.comment,
-            'Сегмент': channel.segments,
+            'Комментарий': channel.comment or '',
+            'Сегмент': channel.segments or 'СНГ',
             'Идентификатор промо': channel.promo_id or '',
-            'Ссылка': channel.link
+            'Ссылка': channel.link or ''
         }
         
         # Получаем заголовки из первой строки
@@ -702,9 +746,9 @@ async def create_channel(channel: InfoChannelCreate):
                 "project": channel.project,
                 "start_date": channel.start_date,
                 "name": channel.name,
-                "comment": channel.comment,
-                "segments": channel.segments,
-                "link": channel.link,
+                "comment": channel.comment or '',
+                "segments": channel.segments or 'СНГ',
+                "link": channel.link or '',
                 "promo_id": channel.promo_id
             }
         }
