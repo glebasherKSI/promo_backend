@@ -52,7 +52,7 @@ jobs:
               pip install -r requirements.txt --no-cache-dir
             fi &&
 
-            sudo systemctl restart fastapi
+            systemctl restart fastapi
           """)
 
           print(stdout.read().decode())
