@@ -52,7 +52,7 @@ class InfoChannelInput(BaseModel):
 class PromoEventCreate(BaseModel):
     project: str
     promo_type: str
-    promo_kind: str
+    promo_kind: str = ""
     start_date: str
     end_date: str
     name: str
@@ -311,7 +311,7 @@ async def create_event(event: PromoEventCreate):
         unique_id = str(uuid.uuid4())
         
         # Валидация обязательных полей
-        if not event.project or not event.promo_type or not event.promo_kind or not event.name:
+        if not event.project or not event.promo_type  or not event.name:
             raise HTTPException(status_code=400, detail="Не все обязательные поля заполнены")
         
         # Формируем данные промо
