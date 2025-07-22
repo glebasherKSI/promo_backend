@@ -8,6 +8,7 @@ from datetime import datetime, date, timedelta
 import calendar
 from pydantic import BaseModel, validator
 import pandas as pd
+from roaters.promo_fields import router as promo_fields_router
 
 
 # Настройки JWT
@@ -19,7 +20,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 часа
 
 app = FastAPI(title="Promo Calendar API", version="1.0.0")
 
-# CORS middleware для работы с React
+# Подключаем роутеры
+app.include_router(promo_fields_router)
+
+# CORS middleware для работы сReact
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
