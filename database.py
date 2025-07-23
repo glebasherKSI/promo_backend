@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 import logging
 from dotenv import load_dotenv
-from config import MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_PORT
+
 # Загружаем переменные окружения
 load_dotenv()
 
@@ -18,17 +18,21 @@ class DatabaseConfig:
     """Конфигурация базы данных"""
     
     def __init__(self):
-        # Чтение настроек из config.py
-        
+        # Чтение настроек из .env файла
+        self.host = os.getenv('MYSQL_HOST', 'localhost')
+        self.user = os.getenv('MYSQL_USER', 'promo_user')
+        self.password = os.getenv('MYSQL_PASSWORD', '789159987Cs')
+        self.database = os.getenv('MYSQL_DATABASE', 'promo_db')
+        self.port = int(os.getenv('MYSQL_PORT', '3306'))
         
         self.config = {
-            'host': MYSQL_HOST,
-            'user': MYSQL_USER,
-            'password': MYSQL_PASSWORD,
-            'database': MYSQL_DATABASE,
+            'host': self.host,
+            'user': self.user,
+            'password': self.password,
+            'database': self.database,
             'charset': 'utf8mb4',
             'autocommit': False,
-            'port': MYSQL_PORT,
+            'port': self.port,
             'pool_name': 'promo_pool',
             'pool_size': 10,
             'pool_reset_session': True
@@ -40,6 +44,18 @@ class DatabaseConfig:
         print(f"   DATABASE: {self.config['database']}")
         print(f"   PORT: {self.config['port']}")
         print(f"   PASSWORD установлен: {'Да' if self.config['password'] else 'Нет'}")
+        
+        # Дополнительная диагностика .env файла
+        env_path = os.path.join(os.getcwd(), '.env')
+        print(f"🔍 Поиск .env файла в: {env_path}")
+        print(f"📁 Рабочая директория: {os.getcwd()}")
+        print(f"📄 .env файл существует: {'Да' if os.path.exists('.env') else 'Нет'}")
+        
+        if os.path.exists('.env'):
+            with open('.env', 'r') as f:
+                content = f.read()
+                print(f"📋 Размер .env файла: {len(content)} символов")
+                print(f"🔑 Переменные в .env: {[line.split('=')[0] for line in content.split('\n') if '=' in line]}")
     
     def get_pool_config(self):
         """Получить конфигурацию для пула соединений"""
