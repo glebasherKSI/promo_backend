@@ -18,23 +18,44 @@ class DatabaseConfig:
     """Конфигурация базы данных"""
     
     def __init__(self):
+        # Прямое чтение .env файла
+        env_vars = {}
+        try:
+            if os.path.exists('.env'):
+                with open('.env', 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and '=' in line and not line.startswith('#'):
+                            key, value = line.split('=', 1)
+                            env_vars[key] = value
+                print("✅ .env файл прочитан напрямую")
+                print(f"🔍 Найдено переменных: {len(env_vars)}")
+                for key in env_vars:
+                    if 'PASSWORD' not in key:
+                        print(f"🔍 {key}: {env_vars[key]}")
+            else:
+                print("❌ .env файл не найден")
+        except Exception as e:
+            print(f"❌ Ошибка чтения .env: {e}")
+        
         self.config = {
-            'host': os.getenv('MYSQL_HOST', 'localhost'),
-            'user': os.getenv('MYSQL_USER', 'root'),
-            'password': os.getenv('MYSQL_PASSWORD', ''),
-            'database': os.getenv('MYSQL_DATABASE', 'promo_calendar'),
+            'host': env_vars.get('MYSQL_HOST', 'localhost'),
+            'user': env_vars.get('MYSQL_USER', 'root'),
+            'password': env_vars.get('MYSQL_PASSWORD', ''),
+            'database': env_vars.get('MYSQL_DATABASE', 'promo_calendar'),
             'charset': 'utf8mb4',
             'autocommit': False,
-            'port': int(os.getenv('MYSQL_PORT', 3306)),
+            'port': int(env_vars.get('MYSQL_PORT', 3306)),
             'pool_name': 'promo_pool',
             'pool_size': 10,
             'pool_reset_session': True
         }
-    
-    def get_pool_config(self):
-        """Получить конфигурацию для пула соединений"""
-        return self.config
-
+        
+        print(f"🔧 Конфигурация БД:")
+        print(f"   HOST: {self.config['host']}")
+        print(f"   USER: {self.config['user']}")
+        print(f"   DATABASE: {self.config['database']}")
+        print(f"   PASSWORD установлен: {'Да' if self.config['password'] else 'Нет'}")
 class DatabaseManager:
     """Менеджер для работы с базой данных"""
     
