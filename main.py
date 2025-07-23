@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional, Literal
-import gspread
 import os
 import uuid
 from datetime import datetime, date, timedelta
@@ -9,6 +8,7 @@ import calendar
 from pydantic import BaseModel, validator
 import pandas as pd
 from roaters.promo_fields import router as promo_fields_router
+from database import get_repositories
 
 
 # Настройки JWT
@@ -43,6 +43,22 @@ app.add_middleware(
 )
 
 # Pydantic модели
+
+def validate_id_field(v):
+    """Валидатор для ID полей - принимает числа и UUID"""
+    if v:
+        # Проверяем если это число (автоинкрементный ID из БД)
+        if str(v).isdigit():
+            return str(v)
+        
+        # Проверяем если это UUID (старый формат)
+        try:
+            uuid.UUID(v)
+            return v
+        except ValueError:
+            raise ValueError('ID должен быть числом или валидным UUID')
+    return v
+
 class InfoChannelInput(BaseModel):
     id: Optional[str] = None  # None для новых каналов
     type: str
@@ -52,6 +68,10 @@ class InfoChannelInput(BaseModel):
     segments: str = "СНГ"
     link: Optional[str] = ""
     project: Optional[str] = None  # Делаем опциональным
+    
+    @validator('id')
+    def validate_id(cls, v):
+        return validate_id_field(v)
 
 class PromoEventCreate(BaseModel):
     project: str
@@ -153,12 +173,7 @@ class InfoChannelCreate(BaseModel):
     
     @validator('promo_id')
     def validate_promo_id(cls, v):
-        if v:
-            try:
-                uuid.UUID(v)
-            except ValueError:
-                raise ValueError('promo_id должен быть валидным UUID')
-        return v
+        return validate_id_field(v)
     
     @validator('comment', 'link', pre=True)
     def empty_str_to_none(cls, v):
@@ -174,20 +189,30 @@ class UserResponse(BaseModel):
     role: str
     token: str
 
-# Google Sheets клиент
-def get_google_sheets_client():
-    """Получить клиент Google Sheets"""
+# Удалено - используем базу данных вместо Google Sheets
+
+
+
+def get_repos():
+    """Хелпер для получения репозиториев с обработкой ошибок"""
     try:
-        if not os.path.exists('../data/data.json'):
-            raise HTTPException(status_code=500, detail="Файл аутентификации не найден")
-        
-        gc = gspread.service_account(filename='../data/data.json')
-        spreadsheet = gc.open_by_key('1LrJyEzeyM5ULgR1QjWXcHW_jM2RsYPxOo2RqjQB8URw')
-        return spreadsheet
+        return get_repositories()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка подключения к Google Sheets: {str(e)}")
-
-
+        # В случае недоступности БД, выводим детальную ошибку
+        print(f"❌ База данных недоступна: {e}")
+        print("💡 Проверьте:")
+        print("   1. Запущен ли MySQL сервер")
+        print("   2. Правильные ли настройки в .env файле:")
+        print("      MYSQL_HOST=91.209.226.31")
+        print("      MYSQL_USER=promo_user") 
+        print("      MYSQL_PASSWORD=789159987Cs")
+        print("      MYSQL_DATABASE=promo_db")
+        print("      MYSQL_PORT=3306")
+        print("   3. Доступен ли сервер по сети")
+        raise HTTPException(
+            status_code=503, 
+            detail="База данных временно недоступна. Проверьте подключение к MySQL серверу."
+        )
 
 @app.get("/")
 async def root():
@@ -226,79 +251,43 @@ def convert_date_to_iso(date_str: str) -> str:
 
 @app.get("/api/events")
 async def get_events():
-    """Получить все события из Google Sheets"""
+    """Получить все события из базы данных (оптимизированная версия)"""
     try:
-        spreadsheet = get_google_sheets_client()
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
-        try:
-            # Проверяем наличие листов
-            promo_sheet = spreadsheet.worksheet('ПРОМО')
-            info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
-            
-            # Получаем данные промо
-            promo_data = promo_sheet.get_all_records()
-            if not promo_data:
-                return {"events": []}
-            
-            # Получаем данные информирования
-            try:
-                info_data = info_sheet.get_all_records()
-            except:
-                info_data = []
-            
-            # Группируем информирования по промо ID
-            info_by_promo = {}
-            for info_row in info_data:
-                promo_id = info_row.get('Идентификатор промо')
-                if promo_id:
-                    if promo_id not in info_by_promo:
-                        info_by_promo[promo_id] = []
-                    
-                    info_by_promo[promo_id].append({
-                        'id': info_row.get('id', ''),
-                        'type': info_row.get('Информирование', ''),
-                        'project': info_row.get('Проект', ''),
-                        'start_date': convert_date_to_iso(info_row.get('Дата старта', '')),
-                        'name': info_row.get('Название', ''),
-                        'comment': info_row.get('Комментарий', ''),
-                        'segments': info_row.get('Сегмент', ''),
-                        'promo_id': promo_id,
-                        'link': info_row.get('Ссылка', '')
-                    })
-            
-            # Формируем агрегированные данные
-            aggregated_data = []
-            for promo_row in promo_data:
-                try:
-                    promo_id = promo_row.get('id')
-                    if not promo_id:  # Пропускаем строки без id
-                        continue
-                        
-                    event = {
-                        'id': promo_id,
-                        'project': promo_row.get('Проект', ''),
-                        'promo_type': promo_row.get('Тип промо', ''),
-                        'promo_kind': promo_row.get('Вид промо', ''),
-                        'start_date': convert_date_to_iso(promo_row.get('Дата старта', '')),
-                        'end_date': convert_date_to_iso(promo_row.get('Дата конца', '')),
-                        'name': promo_row.get('Название', ''),
-                        'comment': promo_row.get('Комментарий', ''),
-                        'segments': promo_row.get('Сегмент', ''),
-                        'link': promo_row.get('Ссылка', ''),
-                        'info_channels': info_by_promo.get(promo_id, [])
-                    }
-                    
-                    aggregated_data.append(event)
-                except Exception as row_error:
-                    print(f"Ошибка при обработке строки промо: {str(row_error)}")
-                    continue
-            
-            return {"events": aggregated_data}
-            
-        except Exception as sheet_error:
-            print(f"Ошибка при работе с таблицей: {str(sheet_error)}")
+        # Получаем все промо-акции с информированиями одним запросом (вместо N+1)
+        promotions = promo_repo.get_all_promotions_with_informing()
+        
+        if not promotions:
             return {"events": []}
-            
+        
+        # Преобразуем данные в формат, ожидаемый фронтендом
+        aggregated_data = []
+        for promo in promotions:
+            try:
+                event = {
+                    'id': str(promo['id']),  # Конвертируем в строку для совместимости
+                    'project': promo.get('project', ''),
+                    'promo_type': promo.get('promo_type', ''),
+                    'promo_kind': promo.get('promo_kind', ''),
+                    'start_date': promo.get('start_date', ''),
+                    'end_date': promo.get('end_date', ''),
+                    'name': promo.get('title', ''),  # В БД это title
+                    'comment': promo.get('comment', ''),
+                    'segments': promo.get('segment', ''),  # В БД это segment
+                    'link': promo.get('link', ''),
+                    'info_channels': promo.get('info_channels', [])  # Уже включены в результат JOIN
+                }
+                
+                aggregated_data.append(event)
+            except Exception as row_error:
+                print(f"Ошибка при обработке промо-акции {promo.get('id')}: {str(row_error)}")
+                continue
+        
+        print(f"✅ Загружено {len(aggregated_data)} событий оптимизированным методом")
+        return {"events": aggregated_data}
+        
     except Exception as e:
         print(f"Критическая ошибка: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Ошибка получения данных: {str(e)}")
@@ -307,71 +296,49 @@ async def get_events():
 async def create_event(event: PromoEventCreate):
     """Создать новое промо событие"""
     try:
-        spreadsheet = get_google_sheets_client()
-        promo_sheet = spreadsheet.worksheet('ПРОМО')
-        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
-        
-        # Создаем уникальный ID для промо
-        unique_id = str(uuid.uuid4())
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
         # Валидация обязательных полей
-        if not event.project or not event.promo_type  or not event.name:
+        if not event.project or not event.promo_type or not event.name:
             raise HTTPException(status_code=400, detail="Не все обязательные поля заполнены")
         
-        # Формируем данные промо
+        # Формируем данные для создания промо-акции
         promo_data = {
-            'id': unique_id,
-            'Проект': event.project,
-            'Тип промо': event.promo_type,
-            'Вид промо': event.promo_kind,
-            'Дата старта': event.start_date,
-            'Дата конца': event.end_date,
-            'Название': event.name,
-            'Комментарий': event.comment or '',
-            'Сегмент': event.segments or 'СНГ',
-            'Ссылка': event.link or ''
+            'project': event.project,
+            'promo_type': event.promo_type,
+            'promo_kind': event.promo_kind,
+            'start_date': event.start_date,
+            'end_date': event.end_date,
+            'name': event.name,  # В репозитории будет сохранено в поле title
+            'comment': event.comment or '',
+            'segments': event.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
+            'link': event.link or '',
+            'responsible_id': None  # Можно добавить логику определения ответственного
         }
         
-        # Получаем заголовки из первой строки
-        headers = promo_sheet.row_values(1)
-        if not headers:
-            raise HTTPException(status_code=500, detail="Отсутствуют заголовки в таблице ПРОМО")
-            
-        # Формируем список значений в том же порядке, что и заголовки
-        promo_row = [promo_data.get(header, '') for header in headers]
-        
-        # Добавляем новое промо
-        promo_sheet.append_row(promo_row)
+        # Создаем промо-акцию
+        promotion_id = promo_repo.create_promotion(promo_data)
         
         # Обрабатываем информирования
         if event.info_channels:
-            # Получаем заголовки из таблицы информирования
-            info_headers = info_sheet.row_values(1)
-            if not info_headers:
-                raise HTTPException(status_code=500, detail="Отсутствуют заголовки в таблице ИНФОРМИРОВАНИЕ")
-            
             for channel in event.info_channels:
                 if channel.start_date:  # Проверяем наличие даты
-                    unique_id_info = str(uuid.uuid4())
                     info_data = {
-                        'id': unique_id_info,
-                        'Информирование': channel.type,
-                        'Проект': channel.project or event.project,
-                        'Дата старта': channel.start_date,
-                        'Название': channel.name,
-                        'Комментарий': channel.comment or '',
-                        'Сегмент': channel.segments or 'СНГ',
-                        'Идентификатор промо': unique_id,
-                        'Ссылка': channel.link or ''
+                        'type': channel.type,  # В репозитории будет сохранено в поле informing_type
+                        'project': channel.project or event.project,
+                        'start_date': channel.start_date,
+                        'name': channel.name,  # В репозитории будет сохранено в поле title
+                        'comment': channel.comment or '',
+                        'segments': channel.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
+                        'promo_id': promotion_id,
+                        'link': channel.link or ''
                     }
                     
-                    # Формируем список значений для информирования
-                    info_row = [info_data.get(header, '') for header in info_headers]
-                    
-                    # Добавляем новое информирование
-                    info_sheet.append_row(info_row)
+                    # Создаем информирование
+                    informing_repo.create_informing(info_data)
         
-        return {"message": "Событие успешно создано", "id": unique_id}
+        return {"message": "Событие успешно создано", "id": str(promotion_id)}
         
     except Exception as e:
         print(f"Ошибка при создании события: {str(e)}")
@@ -485,92 +452,85 @@ def info_intersects_month(info, year, month):
 async def update_event(event_id: str, event: PromoEventUpdate):
     """Обновить промо событие и его каналы информирования"""
     try:
-        spreadsheet = get_google_sheets_client()
-        promo_sheet = spreadsheet.worksheet('ПРОМО')
-        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
-        # Получаем все записи
-        promo_records = promo_sheet.get_all_records()
-        info_records = info_sheet.get_all_records()
+        promotion_id = int(event_id)
         
-        # Ищем индекс записи для обновления промо
-        promo_row_idx = None
-        for idx, record in enumerate(promo_records, start=2):  # start=2 так как первая строка - заголовки
-            if record.get('id') == event_id:
-                promo_row_idx = idx
-                break
-        
-        if not promo_row_idx:
+        # Проверяем существование промо-акции
+        existing_promotion = promo_repo.get_promotion_by_id(promotion_id)
+        if not existing_promotion:
             raise HTTPException(status_code=404, detail="Промо событие не найдено")
         
-        # Обновляем данные промо
-        update_data = {
-            'id': event_id,
-            'Проект': event.project,
-            'Тип промо': event.promo_type,
-            'Вид промо': event.promo_kind,
-            'Дата старта': event.start_date,
-            'Дата конца': event.end_date,
-            'Название': event.name,
-            'Комментарий': event.comment,
-            'Сегмент': event.segments,
-            'Ссылка': event.link
+        # Обновляем данные промо-акции
+        promo_data = {
+            'project': event.project,
+            'promo_type': event.promo_type,
+            'promo_kind': event.promo_kind,
+            'start_date': event.start_date,
+            'end_date': event.end_date,
+            'name': event.name,  # В репозитории будет сохранено в поле title
+            'comment': event.comment,
+            'segments': event.segments,  # В репозитории будет сохранено в поле segment
+            'link': event.link,
+            'responsible_id': existing_promotion.get('responsible_id')  # Сохраняем существующего ответственного
         }
         
-        # Получаем заголовки промо
-        promo_headers = promo_sheet.row_values(1)
-        
-        # Формируем список значений в том же порядке, что и заголовки
-        promo_values = [update_data.get(header, '') for header in promo_headers]
-        
-        # Обновляем строку промо
-        promo_sheet.update(f'A{promo_row_idx}:J{promo_row_idx}', [promo_values])
+        # Обновляем промо-акцию
+        promo_repo.update_promotion(promotion_id, promo_data)
         
         # Обработка каналов информирования
         
         # 1. Получаем существующие каналы для этого промо
-        existing_channels = {}
-        channels_to_delete = []
-        for idx, record in enumerate(info_records, start=2):
-            if record.get('Идентификатор промо') == event_id:
-                channel_id = record.get('id')
-                existing_channels[channel_id] = idx
+        existing_channels = informing_repo.get_informing_by_promo_id(promotion_id)
+        existing_channel_ids = {str(ch['id']): ch['id'] for ch in existing_channels}
         
         # 2. Обрабатываем каждый канал из запроса
-        info_headers = info_sheet.row_values(1)
+        processed_channel_ids = set()
+        
         for channel in event.info_channels:
-            channel_data = {
-                'id': channel.id or str(uuid.uuid4()),
-                'Информирование': channel.type,
-                'Проект': event.project,
-                'Дата старта': channel.start_date,
-                'Название': channel.name,
-                'Комментарий': channel.comment,
-                'Сегмент': channel.segments,
-                'Идентификатор промо': event_id,
-                'Ссылка': channel.link
-            }
-            
-            channel_values = [channel_data.get(header, '') for header in info_headers]
-            
-            if channel.id and channel.id in existing_channels:
+            if channel.id and str(channel.id) in existing_channel_ids:
                 # Обновляем существующий канал
-                row_idx = existing_channels[channel.id]
-                info_sheet.update(f'A{row_idx}:I{row_idx}', [channel_values])
-                del existing_channels[channel.id]
+                channel_data = {
+                    'type': channel.type,
+                    'project': event.project,
+                    'start_date': channel.start_date,
+                    'name': channel.name,
+                    'comment': channel.comment,
+                    'segments': channel.segments,
+                    'promo_id': promotion_id,
+                    'link': channel.link
+                }
+                
+                informing_repo.update_informing(existing_channel_ids[str(channel.id)], channel_data)
+                processed_channel_ids.add(str(channel.id))
             else:
                 # Добавляем новый канал
-                info_sheet.append_row(channel_values)
+                channel_data = {
+                    'type': channel.type,
+                    'project': event.project,
+                    'start_date': channel.start_date,
+                    'name': channel.name,
+                    'comment': channel.comment,
+                    'segments': channel.segments,
+                    'promo_id': promotion_id,
+                    'link': channel.link
+                }
+                
+                informing_repo.create_informing(channel_data)
         
         # 3. Удаляем каналы, которые не были обновлены (были удалены на фронтенде)
-        for channel_id, row_idx in sorted(existing_channels.items(), key=lambda x: x[1], reverse=True):
-            info_sheet.delete_rows(row_idx)
+        for channel_id_str, channel_id in existing_channel_ids.items():
+            if channel_id_str not in processed_channel_ids:
+                informing_repo.delete_informing(channel_id)
         
         return {
             "message": "Промо событие и каналы информирования успешно обновлены",
             "id": event_id
         }
         
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат ID события")
     except Exception as e:
         if isinstance(e, HTTPException):
             raise e
@@ -583,126 +543,105 @@ async def update_event(event_id: str, event: PromoEventUpdate):
 async def update_channel(channel_id: str, channel: InfoChannelUpdate):
     """Обновить канал информирования"""
     try:
-        spreadsheet = get_google_sheets_client()
-        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
-        # Получаем все записи
-        records = info_sheet.get_all_records()
+        informing_id = int(channel_id)
+        promo_id = int(channel.promo_id) if channel.promo_id else None
         
-        # Ищем индекс записи для обновления
-        row_idx = None
-        for idx, record in enumerate(records, start=2):  # start=2 так как первая строка - заголовки
-            if record.get('id') == channel_id:
-                row_idx = idx
-                break
-        
-        if not row_idx:
-            raise HTTPException(status_code=404, detail="Канал информирования не найден")
-        
-        # Обновляем данные
-        update_data = {
-            'id': channel_id,
-            'Информирование': channel.type,
-            'Проект': channel.project,
-            'Дата старта': channel.start_date,
-            'Название': channel.name,
-            'Комментарий': channel.comment,
-            'Сегмент': channel.segments,
-            'Идентификатор промо': channel.promo_id,
-            'Ссылка': channel.link
+        # Формируем данные для обновления
+        channel_data = {
+            'type': channel.type,
+            'project': channel.project,
+            'start_date': channel.start_date,
+            'name': channel.name,
+            'comment': channel.comment,
+            'segments': channel.segments,
+            'promo_id': promo_id,
+            'link': channel.link
         }
         
-        # Получаем заголовки
-        headers = info_sheet.row_values(1)
+        # Обновляем канал информирования
+        success = informing_repo.update_informing(informing_id, channel_data)
         
-        # Формируем список значений в том же порядке, что и заголовки
-        values = [update_data.get(header, '') for header in headers]
-        
-        # Обновляем строку
-        info_sheet.update(f'A{row_idx}:I{row_idx}', [values])
+        if not success:
+            raise HTTPException(status_code=404, detail="Канал информирования не найден")
         
         return {"message": "Канал информирования успешно обновлен"}
         
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат ID канала")
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"Ошибка обновления канала информирования: {str(e)}")
 
 @app.delete("/api/events/{event_id}")
 async def delete_event(event_id: str):
     """Удалить промо событие и все связанные с ним каналы информирования"""
     try:
-        spreadsheet = get_google_sheets_client()
-        promo_sheet = spreadsheet.worksheet('ПРОМО')
-        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
-        # Поиск и удаление промо события
-        promo_records = promo_sheet.get_all_records()
-        promo_row_idx = None
+        promotion_id = int(event_id)
         
-        for idx, record in enumerate(promo_records, start=2):  # start=2 так как первая строка - заголовки
-            if record.get('id') == event_id:
-                promo_row_idx = idx
-                break
-        
-        if not promo_row_idx:
+        # Проверяем существование промо-акции
+        existing_promotion = promo_repo.get_promotion_by_id(promotion_id)
+        if not existing_promotion:
             raise HTTPException(status_code=404, detail="Промо событие не найдено")
         
-        # Удаляем промо событие
-        promo_sheet.delete_rows(promo_row_idx)
+        # Получаем количество связанных информирований для отчета
+        existing_channels = informing_repo.get_informing_by_promo_id(promotion_id)
+        channels_count = len(existing_channels)
         
-        # Поиск и удаление связанных каналов информирования
-        info_records = info_sheet.get_all_records()
-        info_rows_to_delete = []
+        # Удаляем промо-акцию (информирования удалятся автоматически благодаря каскадному удалению в репозитории)
+        success = promo_repo.delete_promotion(promotion_id)
         
-        for idx, record in enumerate(info_records, start=2):
-            if record.get('Идентификатор промо') == event_id:
-                info_rows_to_delete.append(idx)
-        
-        # Удаляем связанные каналы информирования в обратном порядке,
-        # чтобы не нарушить индексацию при множественном удалении
-        for row_idx in sorted(info_rows_to_delete, reverse=True):
-            info_sheet.delete_rows(row_idx)
+        if not success:
+            raise HTTPException(status_code=404, detail="Промо событие не найдено")
         
         return {
             "message": "Промо событие и связанные каналы информирования успешно удалены",
-            "deleted_channels_count": len(info_rows_to_delete)
+            "deleted_channels_count": channels_count
         }
         
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат ID события")
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"Ошибка удаления промо события: {str(e)}")
 
 @app.delete("/api/channels/{channel_id}")
 async def delete_channel(channel_id: str):
     """Удалить канал информирования"""
     try:
-        spreadsheet = get_google_sheets_client()
-        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
-        # Поиск канала информирования
-        records = info_sheet.get_all_records()
-        row_idx = None
-        
-        for idx, record in enumerate(records, start=2):  # start=2 так как первая строка - заголовки
-            if record.get('id') == channel_id:
-                row_idx = idx
-                break
-        
-        if not row_idx:
-            raise HTTPException(status_code=404, detail="Канал информирования не найден")
+        informing_id = int(channel_id)
         
         # Удаляем канал информирования
-        info_sheet.delete_rows(row_idx)
+        success = informing_repo.delete_informing(informing_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Канал информирования не найден")
         
         return {"message": "Канал информирования успешно удален"}
         
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Неверный формат ID канала")
     except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
         raise HTTPException(status_code=500, detail=f"Ошибка удаления канала информирования: {str(e)}")
 
 @app.post("/api/channels", status_code=status.HTTP_201_CREATED)
 async def create_channel(channel: InfoChannelCreate):
     """Создать новый канал информирования"""
     try:
-        spreadsheet = get_google_sheets_client()
-        info_sheet = spreadsheet.worksheet('ИНФОРМИРОВАНИЕ')
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
         
         # Валидация обязательных полей
         if not channel.type or not channel.project or not channel.name:
@@ -711,41 +650,26 @@ async def create_channel(channel: InfoChannelCreate):
                 detail="Не все обязательные поля заполнены"
             )
         
-        # Создаем уникальный ID для канала
-        unique_id = str(uuid.uuid4())
-        
         # Формируем данные канала
         channel_data = {
-            'id': unique_id,
-            'Информирование': channel.type,
-            'Проект': channel.project,
-            'Дата старта': channel.start_date,
-            'Название': channel.name,
-            'Комментарий': channel.comment or '',
-            'Сегмент': channel.segments or 'СНГ',
-            'Идентификатор промо': channel.promo_id or '',
-            'Ссылка': channel.link or ''
+            'type': channel.type,
+            'project': channel.project,
+            'start_date': channel.start_date,
+            'name': channel.name,
+            'comment': channel.comment or '',
+            'segments': channel.segments or 'СНГ',
+            'promo_id': int(channel.promo_id) if channel.promo_id else None,
+            'link': channel.link or ''
         }
         
-        # Получаем заголовки из первой строки
-        headers = info_sheet.row_values(1)
-        if not headers:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Отсутствуют заголовки в таблице ИНФОРМИРОВАНИЕ"
-            )
-            
-        # Формируем список значений в том же порядке, что и заголовки
-        channel_row = [channel_data.get(header, '') for header in headers]
-        
-        # Добавляем новый канал
-        info_sheet.append_row(channel_row)
+        # Создаем канал информирования
+        informing_id = informing_repo.create_informing(channel_data)
         
         return {
             "message": "Канал информирования успешно создан",
-            "id": unique_id,
+            "id": str(informing_id),
             "channel": {
-                "id": unique_id,
+                "id": str(informing_id),
                 "type": channel.type,
                 "project": channel.project,
                 "start_date": channel.start_date,
@@ -770,21 +694,19 @@ async def create_channel(channel: InfoChannelCreate):
 async def login(user_data: UserLogin):
     """Аутентификация пользователя"""
     try:
-        spreadsheet = get_google_sheets_client()
-        users_sheet = spreadsheet.worksheet('USERS')
-        users_data = users_sheet.get_all_records()
-        print(users_data)
-        # Поиск пользователя
-        user = None
-        for row in users_data:
-            print(row.get('login'), user_data.username, row.get('password'), user_data.password)
-            if row.get('login').strip().lower() == user_data.username.strip().lower() and str(row.get('password')).strip().lower() == str(user_data.password).strip().lower():
-                return {
-                    "user": {
-                        "username": row.get('login'),
-                        "role": row.get('role', 'user')
-                    }
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
+        
+        # Поиск пользователя в базе данных
+        user = user_repo.get_user_by_credentials(user_data.username, user_data.password)
+        
+        if user:
+            return {
+                "user": {
+                    "username": user.get('login'),
+                    "role": user.get('role', 'user')
                 }
+            }
         
         raise HTTPException(
             status_code=401,

@@ -6,3 +6,5 @@ pandas
 holidays
 jira
 jinja2
+mysql-connector-python
+python-dotenv
