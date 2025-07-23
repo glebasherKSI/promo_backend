@@ -55,7 +55,9 @@ class DatabaseConfig:
             with open('.env', 'r') as f:
                 content = f.read()
                 print(f"📋 Размер .env файла: {len(content)} символов")
-                print(f"🔑 Переменные в .env: {[line.split('=')[0] for line in content.split('\n') if '=' in line]}")
+                # Исправляем синтаксическую ошибку - выносим обработку строк наружу
+                env_variables = [line.split('=')[0] for line in content.split('\n') if '=' in line]
+                print(f"🔑 Переменные в .env: {env_variables}")
     
     def get_pool_config(self):
         """Получить конфигурацию для пула соединений"""
