@@ -6,7 +6,7 @@ from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 import logging
 from dotenv import load_dotenv
-
+from config import MYSQL_HOST, MYSQL_USER, MYSQL_PASSWORD, MYSQL_DATABASE, MYSQL_PORT
 # Загружаем переменные окружения
 load_dotenv()
 
@@ -18,44 +18,33 @@ class DatabaseConfig:
     """Конфигурация базы данных"""
     
     def __init__(self):
-        # Прямое чтение .env файла
-        env_vars = {}
-        try:
-            if os.path.exists('.env'):
-                with open('.env', 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and '=' in line and not line.startswith('#'):
-                            key, value = line.split('=', 1)
-                            env_vars[key] = value
-                print("✅ .env файл прочитан напрямую")
-                print(f"🔍 Найдено переменных: {len(env_vars)}")
-                for key in env_vars:
-                    if 'PASSWORD' not in key:
-                        print(f"🔍 {key}: {env_vars[key]}")
-            else:
-                print("❌ .env файл не найден")
-        except Exception as e:
-            print(f"❌ Ошибка чтения .env: {e}")
+        # Чтение настроек из config.py
+        
         
         self.config = {
-            'host': env_vars.get('MYSQL_HOST', 'localhost'),
-            'user': env_vars.get('MYSQL_USER', 'root'),
-            'password': env_vars.get('MYSQL_PASSWORD', ''),
-            'database': env_vars.get('MYSQL_DATABASE', 'promo_calendar'),
+            'host': MYSQL_HOST,
+            'user': MYSQL_USER,
+            'password': MYSQL_PASSWORD,
+            'database': MYSQL_DATABASE,
             'charset': 'utf8mb4',
             'autocommit': False,
-            'port': int(env_vars.get('MYSQL_PORT', 3306)),
+            'port': MYSQL_PORT,
             'pool_name': 'promo_pool',
             'pool_size': 10,
             'pool_reset_session': True
         }
         
-        print(f"🔧 Конфигурация БД:")
+        print(f"🔧 Итоговая конфигурация БД:")
         print(f"   HOST: {self.config['host']}")
         print(f"   USER: {self.config['user']}")
         print(f"   DATABASE: {self.config['database']}")
+        print(f"   PORT: {self.config['port']}")
         print(f"   PASSWORD установлен: {'Да' if self.config['password'] else 'Нет'}")
+    
+    def get_pool_config(self):
+        """Получить конфигурацию для пула соединений"""
+        return self.config
+
 class DatabaseManager:
     """Менеджер для работы с базой данных"""
     
