@@ -36,7 +36,7 @@ app.add_middleware(
         "http://192.168.168.14:5173",
         "https://delicate-cat-e905cc.netlify.app",
         "https://promo-gb.duckdns.org",
-        "https://promo-gb.netlify.app/"
+        "https://promo-gb.netlify.app"
 
     ],
     allow_credentials=True,
