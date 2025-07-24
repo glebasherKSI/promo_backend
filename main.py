@@ -34,7 +34,9 @@ app.add_middleware(
         "http://127.0.0.1:5173",
         "http://192.168.168.14:3000",
         "http://192.168.168.14:5173",
-        "https://delicate-cat-e905cc.netlify.app"  
+        "https://delicate-cat-e905cc.netlify.app",
+        "https://promo-gb.duckdns.org"
+
     ],
     allow_credentials=True,
     allow_methods=["*"],
