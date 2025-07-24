@@ -9,7 +9,7 @@ from pydantic import BaseModel, validator
 import pandas as pd
 from roaters.promo_fields import router as promo_fields_router
 from database import get_repositories
-
+from roaters.user_router import user_router
 
 # Настройки JWT
 SECRET_KEY = "your-secret-key-here"  # В продакшене использовать безопасный ключ
@@ -21,7 +21,9 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 24 часа
 app = FastAPI(title="Promo Calendar API", version="1.0.0")
 
 # Подключаем роутеры
+
 app.include_router(promo_fields_router)
+app.include_router(user_router)
 
 # CORS middleware для работы сReact
 app.add_middleware(

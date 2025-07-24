@@ -563,6 +563,73 @@ class UserRepository:
         except Exception as e:
             logger.error(f"Ошибка получения пользователя по email: {e}")
             raise
+    
+    def get_user_by_login(self, login: str) -> Optional[Dict[str, Any]]:
+        """Получить пользователя по логину"""
+        try:
+            with self.db.get_cursor() as (cursor, connection):
+                # Используем LOWER() для регистронезависимого поиска
+                query = "SELECT * FROM users WHERE LOWER(login) = LOWER(%s)"
+                cursor.execute(query, (login.strip(),))
+                user = cursor.fetchone()
+                logger.info(f"🔍 Поиск пользователя по логину '{login}': {'найден' if user else 'не найден'}")
+                return user
+        except Exception as e:
+            logger.error(f"Ошибка получения пользователя по логину: {e}")
+            raise
+    
+    def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Получить пользователя по ID"""
+        try:
+            with self.db.get_cursor() as (cursor, connection):
+                query = "SELECT * FROM users WHERE id = %s"
+                cursor.execute(query, (user_id,))
+                user = cursor.fetchone()
+                return user
+        except Exception as e:
+            logger.error(f"Ошибка получения пользователя по ID: {e}")
+            raise
+    
+    def update_user(self, user_id: int, user_data: Dict[str, Any]) -> bool:
+        """Обновить данные пользователя"""
+        try:
+            # Фильтруем только разрешенные поля
+            allowed_fields = ['login', 'password', 'token', 'mail', 'server', 'accountId', 'api_key', 'token_trello']
+            filtered_data = {k: v for k, v in user_data.items() if k in allowed_fields and v is not None}
+            
+            if not filtered_data:
+                logger.warning(f"Нет данных для обновления пользователя {user_id}")
+                return False
+            
+            # Строим запрос UPDATE
+            set_clause = ", ".join([f"{field} = %s" for field in filtered_data.keys()])
+            query = f"UPDATE users SET {set_clause} WHERE id = %s"
+            values = list(filtered_data.values()) + [user_id]
+            
+            with self.db.get_cursor() as (cursor, connection):
+                cursor.execute(query, values)
+                affected_rows = cursor.rowcount
+                connection.commit()
+                
+                logger.info(f"✅ Обновлен пользователь {user_id}")
+                return affected_rows > 0
+                
+        except Exception as e:
+            logger.error(f"Ошибка обновления пользователя {user_id}: {e}")
+            raise
+    
+    def get_all_users(self) -> List[Dict[str, Any]]:
+        """Получить всех пользователей"""
+        try:
+            with self.db.get_cursor() as (cursor, connection):
+                query = "SELECT * FROM users ORDER BY login"
+                cursor.execute(query)
+                users = cursor.fetchall()
+                logger.info(f"📋 Найдено пользователей: {len(users)}")
+                return users
+        except Exception as e:
+            logger.error(f"Ошибка получения всех пользователей: {e}")
+            raise
 
 # Глобальные экземпляры - отложенная инициализация
 db_manager = None
