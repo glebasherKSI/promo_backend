@@ -10,6 +10,8 @@ import pandas as pd
 from roaters.promo_fields import router as promo_fields_router
 from database import get_repositories
 from roaters.user_router import user_router
+from roaters.auth_router import auth_router
+from roaters.protected_routes import protected_router
 
 # Настройки JWT
 SECRET_KEY = "your-secret-key-here"  # В продакшене использовать безопасный ключ
@@ -24,6 +26,8 @@ app = FastAPI(title="Promo Calendar API", version="1.0.0")
 
 app.include_router(promo_fields_router)
 app.include_router(user_router)
+app.include_router(auth_router)
+app.include_router(protected_router)
 
 # CORS middleware для работы сReact
 app.add_middleware(
@@ -79,7 +83,7 @@ class InfoChannelInput(BaseModel):
         return validate_id_field(v)
 
 class PromoEventCreate(BaseModel):
-    project: str
+    project: List[str]  # Список проектов
     promo_type: str
     promo_kind: str = ""
     start_date: str
@@ -89,6 +93,16 @@ class PromoEventCreate(BaseModel):
     segments: str = "СНГ"
     info_channels: List[InfoChannelInput] = []  # Изменяем с dict на List[InfoChannelInput]
     link: Optional[str] = ""
+    
+    @validator('project')
+    def validate_project_list(cls, v):
+        if not v or len(v) == 0:
+            raise ValueError('Список проектов не может быть пустым')
+        # Проверяем, что каждый проект не пустая строка
+        for project in v:
+            if not project or not project.strip():
+                raise ValueError('Название проекта не может быть пустым')
+        return [project.strip() for project in v]
 
 class PromoEvent(BaseModel):
     id: str
@@ -120,7 +134,7 @@ class CalendarData(BaseModel):
     events: List[dict]
 
 class PromoEventUpdate(BaseModel):
-    project: str
+    project: List[str] 
     promo_type: str
     promo_kind: str
     start_date: str
@@ -130,6 +144,16 @@ class PromoEventUpdate(BaseModel):
     segments: str
     link: Optional[str] = ""
     info_channels: List[InfoChannelInput] = []  # Список каналов информирования
+    
+    @validator('project')
+    def validate_project_list(cls, v):
+        if not v or len(v) == 0:
+            raise ValueError('Список проектов не может быть пустым')
+        # Проверяем, что каждый проект не пустая строка
+        for project in v:
+            if not project or not project.strip():
+                raise ValueError('Название проекта не может быть пустым')
+        return [project.strip() for project in v]
 
 class InfoChannelUpdate(BaseModel):
     type: str
@@ -184,15 +208,7 @@ class InfoChannelCreate(BaseModel):
     def empty_str_to_none(cls, v):
         return v if v is not None else ""
 
-# Модели для аутентификации
-class UserLogin(BaseModel):
-    username: str
-    password: str
 
-class UserResponse(BaseModel):
-    username: str
-    role: str
-    token: str
 
 # Удалено - используем базу данных вместо Google Sheets
 
@@ -299,7 +315,7 @@ async def get_events():
 
 @app.post("/api/events")
 async def create_event(event: PromoEventCreate):
-    """Создать новое промо событие"""
+    """Создать промо события для всех проектов из списка (оптимизированная версия с batch insert)"""
     try:
         # Получаем репозитории
         promo_repo, informing_repo, user_repo = get_repos()
@@ -308,48 +324,69 @@ async def create_event(event: PromoEventCreate):
         if not event.project or not event.promo_type or not event.name:
             raise HTTPException(status_code=400, detail="Не все обязательные поля заполнены")
         
-        # Формируем данные для создания промо-акции
-        promo_data = {
-            'project': event.project,
-            'promo_type': event.promo_type,
-            'promo_kind': event.promo_kind,
-            'start_date': event.start_date,
-            'end_date': event.end_date,
-            'name': event.name,  # В репозитории будет сохранено в поле title
-            'comment': event.comment or '',
-            'segments': event.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
-            'link': event.link or '',
-            'responsible_id': None  # Можно добавить логику определения ответственного
+        # Подготавливаем данные для batch создания промо-акций
+        promotions_data = []
+        for project in event.project:
+            promo_data = {
+                'project': project,
+                'promo_type': event.promo_type,
+                'promo_kind': event.promo_kind,
+                'start_date': event.start_date,
+                'end_date': event.end_date,
+                'name': event.name,  # В репозитории будет сохранено в поле title
+                'comment': event.comment or '',
+                'segments': event.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
+                'link': event.link or '',
+                'responsible_id': None  # Можно добавить логику определения ответственного
+            }
+            promotions_data.append(promo_data)
+        
+        # Создаем все промо-акции одним batch запросом
+        promotion_ids = promo_repo.create_promotions_batch(promotions_data)
+        
+        # Подготавливаем данные для batch создания информирований
+        if event.info_channels:
+            informings_data = []
+            for i, project in enumerate(event.project):
+                promotion_id = promotion_ids[i]
+                
+                for channel in event.info_channels:
+                    if channel.start_date:  # Проверяем наличие даты
+                        info_data = {
+                            'type': channel.type,  # В репозитории будет сохранено в поле informing_type
+                            'project': channel.project or project,  # Используем проект из цикла или из канала
+                            'start_date': channel.start_date,
+                            'name': channel.name,  # В репозитории будет сохранено в поле title
+                            'comment': channel.comment or '',
+                            'segments': channel.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
+                            'promo_id': promotion_id,
+                            'link': channel.link or ''
+                        }
+                        informings_data.append(info_data)
+            
+            # Создаем все информирования одним batch запросом
+            if informings_data:
+                informing_repo.create_informings_batch(informings_data)
+        
+        # Формируем ответ
+        created_events = [
+            {
+                "project": project,
+                "id": str(promotion_id)
+            }
+            for project, promotion_id in zip(event.project, promotion_ids)
+        ]
+        
+        return {
+            "message": f"Успешно создано {len(created_events)} событий (оптимизированным методом)",
+            "created_events": created_events
         }
         
-        # Создаем промо-акцию
-        promotion_id = promo_repo.create_promotion(promo_data)
-        
-        # Обрабатываем информирования
-        if event.info_channels:
-            for channel in event.info_channels:
-                if channel.start_date:  # Проверяем наличие даты
-                    info_data = {
-                        'type': channel.type,  # В репозитории будет сохранено в поле informing_type
-                        'project': channel.project or event.project,
-                        'start_date': channel.start_date,
-                        'name': channel.name,  # В репозитории будет сохранено в поле title
-                        'comment': channel.comment or '',
-                        'segments': channel.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
-                        'promo_id': promotion_id,
-                        'link': channel.link or ''
-                    }
-                    
-                    # Создаем информирование
-                    informing_repo.create_informing(info_data)
-        
-        return {"message": "Событие успешно создано", "id": str(promotion_id)}
-        
     except Exception as e:
-        print(f"Ошибка при создании события: {str(e)}")
+        print(f"Ошибка при создании событий: {str(e)}")
         if isinstance(e, HTTPException):
             raise e
-        raise HTTPException(status_code=500, detail=f"Ошибка создания события: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка создания событий: {str(e)}")
 
 @app.get("/api/calendar/{year}/{month}")
 async def get_calendar_data(year: int, month: int):
@@ -363,14 +400,14 @@ async def get_calendar_data(year: int, month: int):
         _, num_days = calendar.monthrange(year, month)
         
         # Группируем события по проектам и типам
-        projects = set()
+        project = set()
         events_by_project_type = {}
         
         for event in events:
             project = event.get('project')
             if not project:
                 continue
-            projects.add(project)
+            project.add(project)
             
             # Основное событие
             promo_type = event.get('promo_type')
@@ -385,7 +422,7 @@ async def get_calendar_data(year: int, month: int):
                 info_type = info.get('type')
                 info_project = info.get('project', project)
                 if info_type and info_intersects_month(info, year, month):
-                    projects.add(info_project)
+                    project.add(info_project)
                     key = (info_project, info_type)
                     if key not in events_by_project_type:
                         events_by_project_type[key] = []
@@ -395,7 +432,7 @@ async def get_calendar_data(year: int, month: int):
             "year": year,
             "month": month,
             "num_days": num_days,
-            "projects": sorted(list(projects)),
+            "project": sorted(list(project)),
             "events_by_project_type": events_by_project_type
         }
         
@@ -468,8 +505,11 @@ async def update_event(event_id: str, event: PromoEventUpdate):
             raise HTTPException(status_code=404, detail="Промо событие не найдено")
         
         # Обновляем данные промо-акции
+        # Берем первый проект из списка (для совместимости с фронтендом)
+        project = event.project[0] if event.project else existing_promotion.get('project', '')
+        
         promo_data = {
-            'project': event.project,
+            'project': project,
             'promo_type': event.promo_type,
             'promo_kind': event.promo_kind,
             'start_date': event.start_date,
@@ -498,7 +538,7 @@ async def update_event(event_id: str, event: PromoEventUpdate):
                 # Обновляем существующий канал
                 channel_data = {
                     'type': channel.type,
-                    'project': event.project,
+                    'project': project,  # Используем проект из списка
                     'start_date': channel.start_date,
                     'name': channel.name,
                     'comment': channel.comment,
@@ -513,7 +553,7 @@ async def update_event(event_id: str, event: PromoEventUpdate):
                 # Добавляем новый канал
                 channel_data = {
                     'type': channel.type,
-                    'project': event.project,
+                    'project': project,  # Используем проект из списка
                     'start_date': channel.start_date,
                     'name': channel.name,
                     'comment': channel.comment,
@@ -695,36 +735,7 @@ async def create_channel(channel: InfoChannelCreate):
             detail=f"Ошибка создания канала информирования: {str(e)}"
         )
 
-@app.post("/api/auth/login")
-async def login(user_data: UserLogin):
-    """Аутентификация пользователя"""
-    try:
-        # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
-        
-        # Поиск пользователя в базе данных
-        user = user_repo.get_user_by_credentials(user_data.username, user_data.password)
-        
-        if user:
-            return {
-                "user": {
-                    "username": user.get('login'),
-                    "role": user.get('role', 'user')
-                }
-            }
-        
-        raise HTTPException(
-            status_code=401,
-            detail="Неверное имя пользователя или пароль"
-        )
-        
-    except Exception as e:
-        if isinstance(e, HTTPException):
-            raise e
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ошибка при попытке входа: {str(e)}"
-        )
+
 
 if __name__ == "__main__":
     import uvicorn

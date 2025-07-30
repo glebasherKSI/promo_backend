@@ -296,6 +296,50 @@ class PromoRepository:
             logger.error(f"Ошибка создания промо-акции: {e}")
             raise
     
+    def create_promotions_batch(self, promotions_data: List[Dict[str, Any]]) -> List[int]:
+        """Создать несколько промо-акций одним запросом (batch insert)"""
+        try:
+            with self.db.get_cursor() as (cursor, connection):
+                query = """
+                    INSERT INTO promotions 
+                    (project, promo_type, promo_kind, start_date, end_date, 
+                     title, comment, segment, link, responsible_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                
+                # Подготавливаем данные для batch insert
+                values = []
+                for promo_data in promotions_data:
+                    start_date = self._parse_date(promo_data.get('start_date'))
+                    end_date = self._parse_date(promo_data.get('end_date'))
+                    
+                    values.append((
+                        promo_data.get('project'),
+                        promo_data.get('promo_type'),
+                        promo_data.get('promo_kind'),
+                        start_date,
+                        end_date,
+                        promo_data.get('name'),  # В БД это title
+                        promo_data.get('comment'),
+                        promo_data.get('segments'),  # В БД это segment
+                        promo_data.get('link'),
+                        promo_data.get('responsible_id')
+                    ))
+                
+                # Выполняем batch insert
+                cursor.executemany(query, values)
+                connection.commit()
+                
+                # Получаем ID созданных записей
+                first_id = cursor.lastrowid
+                created_ids = list(range(first_id, first_id + len(promotions_data)))
+                
+                logger.info(f"✅ Создано {len(created_ids)} промо-акций одним запросом: {created_ids}")
+                return created_ids
+        except Exception as e:
+            logger.error(f"Ошибка batch создания промо-акций: {e}")
+            raise
+    
     def update_promotion(self, promotion_id: int, promotion_data: Dict[str, Any]) -> bool:
         """Обновить промо-акцию"""
         try:
@@ -461,6 +505,46 @@ class InformingRepository:
                 return informing_id
         except Exception as e:
             logger.error(f"Ошибка создания информирования: {e}")
+            raise
+    
+    def create_informings_batch(self, informings_data: List[Dict[str, Any]]) -> List[int]:
+        """Создать несколько информирований одним запросом (batch insert)"""
+        try:
+            with self.db.get_cursor() as (cursor, connection):
+                query = """
+                    INSERT INTO informing 
+                    (informing_type, project, start_date, title, comment, segment, promo_id, link)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """
+                
+                # Подготавливаем данные для batch insert
+                values = []
+                for info_data in informings_data:
+                    start_date = self._parse_date(info_data.get('start_date'))
+                    
+                    values.append((
+                        info_data.get('type'),  # В БД это informing_type
+                        info_data.get('project'),
+                        start_date,
+                        info_data.get('name'),  # В БД это title
+                        info_data.get('comment'),
+                        info_data.get('segments'),  # В БД это segment
+                        info_data.get('promo_id'),
+                        info_data.get('link')
+                    ))
+                
+                # Выполняем batch insert
+                cursor.executemany(query, values)
+                connection.commit()
+                
+                # Получаем ID созданных записей
+                first_id = cursor.lastrowid
+                created_ids = list(range(first_id, first_id + len(informings_data)))
+                
+                logger.info(f"✅ Создано {len(created_ids)} информирований одним запросом: {created_ids}")
+                return created_ids
+        except Exception as e:
+            logger.error(f"Ошибка batch создания информирований: {e}")
             raise
     
     def update_informing(self, informing_id: int, informing_data: Dict[str, Any]) -> bool:
