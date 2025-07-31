@@ -21,6 +21,12 @@ class UserResponse(BaseModel):
     api_key: Optional[str] = None
     token_trello: Optional[str] = None
 
+class UserBriefResponse(BaseModel):
+    """Модель ответа с краткими данными пользователя"""
+    id: int
+    login: str
+    mail: Optional[str] = None
+
 class UserUpdate(BaseModel):
     """Модель для обновления пользователя"""
     login: Optional[str] = None
@@ -92,6 +98,31 @@ async def get_all_users():
         
     except Exception as e:
         logger.error(f"Ошибка получения списка пользователей: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка получения списка пользователей: {str(e)}")
+
+@user_router.get("/list/brief", response_model=List[UserBriefResponse])
+async def get_users_brief():
+    """Получить краткий список всех пользователей (id, login, mail)"""
+    try:
+        logger.info("🔍 Запрос краткого списка пользователей")
+        promo_repo, informing_repo, user_repo = get_repositories()
+        
+        # Получаем всех пользователей
+        users = user_repo.get_all_users()
+        
+        result = []
+        for user in users:
+            result.append(UserBriefResponse(
+                id=user.get('id'),
+                login=user.get('login', ''),
+                mail=user.get('mail')
+            ))
+        
+        logger.info(f"✅ Возвращено {len(result)} пользователей")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Ошибка получения краткого списка пользователей: {e}")
         raise HTTPException(status_code=500, detail=f"Ошибка получения списка пользователей: {str(e)}")
 
 @user_router.put("/{user_id}")

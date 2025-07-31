@@ -12,6 +12,7 @@ from database import get_repositories
 from roaters.user_router import user_router
 from roaters.auth_router import auth_router
 from roaters.protected_routes import protected_router
+from utils.email_service import email_service
 
 # Настройки JWT
 SECRET_KEY = "your-secret-key-here"  # В продакшене использовать безопасный ключ
@@ -93,6 +94,7 @@ class PromoEventCreate(BaseModel):
     segments: str = "СНГ"
     info_channels: List[InfoChannelInput] = []  # Изменяем с dict на List[InfoChannelInput]
     link: Optional[str] = ""
+    responsible_id: Optional[int] = None  # ID ответственного пользователя
     
     @validator('project')
     def validate_project_list(cls, v):
@@ -116,6 +118,8 @@ class PromoEvent(BaseModel):
     segments: str
     info_channels: List[dict] = []
     link: str = ""
+    responsible_id: Optional[int] = None  # ID ответственного пользователя
+    responsible_name: Optional[str] = None  # Имя ответственного пользователя
 
 class InfoEvent(BaseModel):
     id: str
@@ -144,6 +148,7 @@ class PromoEventUpdate(BaseModel):
     segments: str
     link: Optional[str] = ""
     info_channels: List[InfoChannelInput] = []  # Список каналов информирования
+    responsible_id: Optional[int] = None  # ID ответственного пользователя
     
     @validator('project')
     def validate_project_list(cls, v):
@@ -235,6 +240,81 @@ def get_repos():
             detail="База данных временно недоступна. Проверьте подключение к MySQL серверу."
         )
 
+async def send_responsible_notification(
+    responsible_id: int, 
+    promo_name: str, 
+    project: str, 
+    promo_type: str, 
+    start_date: str, 
+    end_date: str, 
+    notification_type: str = "assignment",
+    assigned_by: str = "Система"
+):
+    """
+    Отправить уведомление ответственному пользователю
+    
+    Args:
+        responsible_id: ID ответственного пользователя
+        promo_name: Название промо-акции
+        project: Проект
+        promo_type: Тип промо-акции
+        start_date: Дата начала
+        end_date: Дата окончания
+        notification_type: Тип уведомления ("assignment" или "update")
+        assigned_by: Кто назначил/обновил
+    """
+    try:
+        # Получаем репозитории
+        promo_repo, informing_repo, user_repo = get_repos()
+        
+        # Получаем данные пользователя
+        user = user_repo.get_user_by_id(responsible_id)
+        if not user:
+            print(f"⚠️ Пользователь с ID {responsible_id} не найден")
+            return
+        
+        user_email = user.get('mail')
+        user_login = user.get('login', 'Пользователь')
+        
+        if not user_email:
+            print(f"⚠️ У пользователя {user_login} не указан email")
+            return
+        
+        # Отправляем уведомление в зависимости от типа
+        if notification_type == "assignment":
+            success = email_service.send_responsible_assignment_notification(
+                to_email=user_email,
+                responsible_name=user_login,
+                promo_name=promo_name,
+                project=project,
+                promo_type=promo_type,
+                start_date=start_date,
+                end_date=end_date,
+                assigned_by=assigned_by
+            )
+        elif notification_type == "update":
+            success = email_service.send_responsible_update_notification(
+                to_email=user_email,
+                responsible_name=user_login,
+                promo_name=promo_name,
+                project=project,
+                promo_type=promo_type,
+                start_date=start_date,
+                end_date=end_date,
+                updated_by=assigned_by
+            )
+        else:
+            print(f"⚠️ Неизвестный тип уведомления: {notification_type}")
+            return
+        
+        if success:
+            print(f"✅ Email уведомление отправлено на {user_email}")
+        else:
+            print(f"❌ Ошибка отправки email уведомления на {user_email}")
+            
+    except Exception as e:
+        print(f"❌ Ошибка при отправке уведомления: {e}")
+
 @app.get("/")
 async def root():
     return {"message": "Promo Calendar API"}
@@ -298,7 +378,9 @@ async def get_events():
                     'comment': promo.get('comment', ''),
                     'segments': promo.get('segment', ''),  # В БД это segment
                     'link': promo.get('link', ''),
-                    'info_channels': promo.get('info_channels', [])  # Уже включены в результат JOIN
+                    'info_channels': promo.get('info_channels', []),  # Уже включены в результат JOIN
+                    'responsible_id': promo.get('responsible_id'),
+                    'responsible_name': promo.get('responsible_name')
                 }
                 
                 aggregated_data.append(event)
@@ -337,7 +419,7 @@ async def create_event(event: PromoEventCreate):
                 'comment': event.comment or '',
                 'segments': event.segments or 'СНГ',  # В репозитории будет сохранено в поле segment
                 'link': event.link or '',
-                'responsible_id': None  # Можно добавить логику определения ответственного
+                'responsible_id': event.responsible_id
             }
             promotions_data.append(promo_data)
         
@@ -367,6 +449,22 @@ async def create_event(event: PromoEventCreate):
             # Создаем все информирования одним batch запросом
             if informings_data:
                 informing_repo.create_informings_batch(informings_data)
+        
+        # Отправляем уведомления ответственным (если назначены)
+        if event.responsible_id:
+            for i, project in enumerate(event.project):
+                promotion_id = promotion_ids[i]
+                # Отправляем уведомление асинхронно (не блокируем ответ)
+                await send_responsible_notification(
+                    responsible_id=event.responsible_id,
+                    promo_name=event.name,
+                    project=project,
+                    promo_type=event.promo_type,
+                    start_date=event.start_date,
+                    end_date=event.end_date,
+                    notification_type="assignment",
+                    assigned_by="Система"
+                )
         
         # Формируем ответ
         created_events = [
@@ -518,11 +616,28 @@ async def update_event(event_id: str, event: PromoEventUpdate):
             'comment': event.comment,
             'segments': event.segments,  # В репозитории будет сохранено в поле segment
             'link': event.link,
-            'responsible_id': existing_promotion.get('responsible_id')  # Сохраняем существующего ответственного
+            'responsible_id': event.responsible_id
         }
+        
+        # Проверяем, изменился ли ответственный
+        old_responsible_id = existing_promotion.get('responsible_id')
+        new_responsible_id = event.responsible_id
         
         # Обновляем промо-акцию
         promo_repo.update_promotion(promotion_id, promo_data)
+        
+        # Отправляем уведомление, если ответственный изменился или был назначен
+        if new_responsible_id and new_responsible_id != old_responsible_id:
+            await send_responsible_notification(
+                responsible_id=new_responsible_id,
+                promo_name=event.name,
+                project=project,
+                promo_type=event.promo_type,
+                start_date=event.start_date,
+                end_date=event.end_date,
+                notification_type="assignment" if old_responsible_id is None else "update",
+                assigned_by="Система"
+            )
         
         # Обработка каналов информирования
         
