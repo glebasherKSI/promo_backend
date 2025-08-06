@@ -351,14 +351,31 @@ def convert_date_to_iso(date_str: str) -> str:
         return date_str
 
 @app.get("/api/events")
-async def get_events():
-    """Получить все события из базы данных (оптимизированная версия)"""
+async def get_events(month: Optional[str] = None):
+    """Получить события из базы данных за указанный месяц или все события"""
     try:
         # Получаем репозитории
         promo_repo, informing_repo, user_repo = get_repos()
         
-        # Получаем все промо-акции с информированиями одним запросом (вместо N+1)
-        promotions = promo_repo.get_all_promotions_with_informing()
+        # Если месяц не указан, используем текущий месяц по умолчанию
+        if not month:
+            current_date = datetime.now()
+            month = f"{current_date.year}-{current_date.month:02d}"
+        
+        # Валидация формата месяца
+        try:
+            year, month_num = month.split('-')
+            year, month_num = int(year), int(month_num)
+            if not (1 <= month_num <= 12):
+                raise ValueError("Месяц должен быть от 1 до 12")
+        except (ValueError, IndexError):
+            raise HTTPException(
+                status_code=400, 
+                detail="Неверный формат месяца. Используйте формат YYYY-MM (например, 2025-09)"
+            )
+        
+        # Получаем промо-акции за указанный месяц
+        promotions = promo_repo.get_promotions_by_month(month)
         
         if not promotions:
             return {"events": []}
@@ -388,7 +405,7 @@ async def get_events():
                 print(f"Ошибка при обработке промо-акции {promo.get('id')}: {str(row_error)}")
                 continue
         
-        print(f"✅ Загружено {len(aggregated_data)} событий оптимизированным методом")
+        print(f"✅ Загружено {len(aggregated_data)} событий за {month}")
         return {"events": aggregated_data}
         
     except Exception as e:

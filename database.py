@@ -1,11 +1,12 @@
 import mysql.connector
 from mysql.connector import pooling
 import os
-from datetime import datetime
+from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 from contextlib import contextmanager
 import logging
 from dotenv import load_dotenv
+import calendar
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -233,6 +234,123 @@ class PromoRepository:
                 
         except Exception as e:
             logger.error(f"Ошибка получения промо-акций с информированиями: {e}")
+            raise
+
+    def get_promotions_by_month(self, month: str) -> List[Dict[str, Any]]:
+        """Получить промо-акции за конкретный месяц с информированиями"""
+        try:
+            # Парсим месяц в формате "YYYY-MM"
+            year, month_num = month.split('-')
+            year, month_num = int(year), int(month_num)
+            
+            # Вычисляем первый и последний день месяца
+            first_day = date(year, month_num, 1)
+            last_day = date(year, month_num, calendar.monthrange(year, month_num)[1])
+            
+            with self.db.get_cursor() as (cursor, connection):
+                # Запрос для получения промо-акций, которые пересекаются с указанным месяцем
+                query = """
+                    SELECT 
+                        p.id as promo_id,
+                        p.project,
+                        p.promo_type,
+                        p.promo_kind,
+                        p.start_date as promo_start_date,
+                        p.end_date as promo_end_date,
+                        p.title as promo_title,
+                        p.comment as promo_comment,
+                        p.segment as promo_segment,
+                        p.link as promo_link,
+                        p.responsible_id,
+                        u.login as responsible_name,
+                        i.id as info_id,
+                        i.informing_type,
+                        i.project as info_project,
+                        i.start_date as info_start_date,
+                        i.title as info_title,
+                        i.comment as info_comment,
+                        i.segment as info_segment,
+                        i.link as info_link
+                    FROM promotions p
+                    LEFT JOIN users u ON p.responsible_id = u.id
+                    LEFT JOIN informing i ON p.id = i.promo_id
+                    WHERE (
+                        -- Промо-акция начинается в указанном месяце
+                        (p.start_date >= %s AND p.start_date <= %s)
+                        OR 
+                        -- Промо-акция заканчивается в указанном месяце
+                        (p.end_date >= %s AND p.end_date <= %s)
+                        OR
+                        -- Промо-акция пересекает указанный месяц (начинается до и заканчивается после)
+                        (p.start_date <= %s AND p.end_date >= %s)
+                        OR
+                        -- Есть информирование в указанном месяце
+                        (i.start_date >= %s AND i.start_date <= %s)
+                    )
+                    ORDER BY p.start_date DESC, i.start_date ASC
+                """
+                
+                cursor.execute(query, (
+                    first_day, last_day,  # start_date в месяце
+                    first_day, last_day,  # end_date в месяце
+                    first_day, last_day,  # пересечение месяца
+                    first_day, last_day   # информирование в месяце
+                ))
+                rows = cursor.fetchall()
+                
+                # Группируем результаты по промо-акциям
+                promotions_map = {}
+                
+                for row in rows:
+                    promo_id = row['promo_id']
+                    
+                    # Создаем промо-акцию если её ещё нет
+                    if promo_id not in promotions_map:
+                        promo_start_date = row['promo_start_date']
+                        promo_end_date = row['promo_end_date']
+                        
+                        promotions_map[promo_id] = {
+                            'id': promo_id,
+                            'project': row['project'] or '',
+                            'promo_type': row['promo_type'] or '',
+                            'promo_kind': row['promo_kind'] or '',
+                            'start_date': promo_start_date.isoformat() + "Z" if promo_start_date else '',
+                            'end_date': promo_end_date.isoformat() + "Z" if promo_end_date else '',
+                            'title': row['promo_title'] or '',
+                            'comment': row['promo_comment'] or '',
+                            'segment': row['promo_segment'] or '',
+                            'link': row['promo_link'] or '',
+                            'responsible_id': row['responsible_id'],
+                            'responsible_name': row['responsible_name'],
+                            'info_channels': []
+                        }
+                    
+                    # Добавляем информирование если оно есть
+                    if row['info_id']:
+                        info_start_date = row['info_start_date']
+                        
+                        info_channel = {
+                            'id': row['info_id'],
+                            'type': row['informing_type'] or '',
+                            'project': row['info_project'] or row['project'] or '',
+                            'start_date': info_start_date.isoformat() + "Z" if info_start_date else '',
+                            'name': row['info_title'] or '',
+                            'comment': row['info_comment'] or '',
+                            'segments': row['info_segment'] or '',
+                            'promo_id': promo_id,
+                            'link': row['info_link'] or ''
+                        }
+                        
+                        promotions_map[promo_id]['info_channels'].append(info_channel)
+                
+                # Возвращаем список промо-акций
+                promotions_list = list(promotions_map.values())
+                
+                logger.info(f"✅ Загружено {len(promotions_list)} промо-акций за {month} с информированиями")
+                return promotions_list
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения промо-акций за месяц {month}: {e}")
             raise
     
     def get_promotion_by_id(self, promotion_id: int) -> Optional[Dict[str, Any]]:
@@ -731,26 +849,44 @@ def optimize_database():
         with db_manager.get_cursor(dictionary=False) as (cursor, connection):
             logger.info("🔧 Создание индексов для оптимизации производительности...")
             
-            # Индексы для оптимизации JOIN запросов
+            # Индексы для оптимизации JOIN запросов (MySQL совместимый синтаксис)
             indexes = [
-                "CREATE INDEX IF NOT EXISTS idx_informing_promo_id ON informing(promo_id)",
-                "CREATE INDEX IF NOT EXISTS idx_promotions_start_date ON promotions(start_date)", 
-                "CREATE INDEX IF NOT EXISTS idx_promotions_project ON promotions(project)",
-                "CREATE INDEX IF NOT EXISTS idx_promotions_responsible_id ON promotions(responsible_id)",
-                "CREATE INDEX IF NOT EXISTS idx_informing_promo_start ON informing(promo_id, start_date)",
-                "CREATE INDEX IF NOT EXISTS idx_users_login ON users(login)"
+                ("idx_informing_promo_id", "informing", "promo_id"),
+                ("idx_promotions_start_date", "promotions", "start_date"),
+                ("idx_promotions_project", "promotions", "project"),
+                ("idx_promotions_responsible_id", "promotions", "responsible_id"),
+                ("idx_informing_promo_start", "informing", "promo_id, start_date"),
+                ("idx_users_login", "users", "login")
             ]
             
             created_count = 0
-            for index_sql in indexes:
+            for index_name, table_name, columns in indexes:
                 try:
-                    cursor.execute(index_sql)
-                    created_count += 1
+                    # Проверяем, существует ли индекс
+                    check_query = f"""
+                        SELECT COUNT(*) 
+                        FROM information_schema.statistics 
+                        WHERE table_schema = DATABASE() 
+                        AND table_name = '{table_name}' 
+                        AND index_name = '{index_name}'
+                    """
+                    cursor.execute(check_query)
+                    exists = cursor.fetchone()[0] > 0
+                    
+                    if not exists:
+                        # Создаем индекс только если он не существует
+                        create_query = f"CREATE INDEX {index_name} ON {table_name}({columns})"
+                        cursor.execute(create_query)
+                        created_count += 1
+                        logger.info(f"✅ Создан индекс {index_name}")
+                    else:
+                        logger.info(f"ℹ️ Индекс {index_name} уже существует")
+                        
                 except Exception as e:
-                    logger.warning(f"Индекс уже существует или ошибка: {e}")
+                    logger.warning(f"Ошибка при создании индекса {index_name}: {e}")
             
             connection.commit()
-            logger.info(f"✅ Оптимизация завершена. Обработано {created_count} индексов")
+            logger.info(f"✅ Оптимизация завершена. Создано {created_count} новых индексов")
             
     except Exception as e:
         logger.error(f"❌ Ошибка оптимизации базы данных: {e}")
