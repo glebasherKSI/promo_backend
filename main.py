@@ -213,6 +213,8 @@ class InfoChannelCreate(BaseModel):
     def empty_str_to_none(cls, v):
         return v if v is not None else ""
 
+class DeleteEventRequest(BaseModel):
+    is_recurring: bool = False
 
 
 # Удалено - используем базу данных вместо Google Sheets
@@ -265,7 +267,7 @@ async def send_responsible_notification(
     """
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         # Получаем данные пользователя
         user = user_repo.get_user_by_id(responsible_id)
@@ -355,7 +357,7 @@ async def get_events(month: Optional[str] = None):
     """Получить события из базы данных за указанный месяц или все события"""
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         # Если месяц не указан, используем текущий месяц по умолчанию
         if not month:
@@ -374,14 +376,16 @@ async def get_events(month: Optional[str] = None):
                 detail="Неверный формат месяца. Используйте формат YYYY-MM (например, 2025-09)"
             )
         
-        # Получаем промо-акции за указанный месяц
+        # Получаем обычные промо-акции за указанный месяц
         promotions = promo_repo.get_promotions_by_month(month)
         
-        if not promotions:
-            return {"events": []}
+        # Получаем рекуррентные события за указанный месяц
+        occurrences = occurrence_repo.get_occurrences_by_month(month)
         
-        # Преобразуем данные в формат, ожидаемый фронтендом
+        # Объединяем данные
         aggregated_data = []
+        
+        # Добавляем обычные промо-акции
         for promo in promotions:
             try:
                 event = {
@@ -397,7 +401,8 @@ async def get_events(month: Optional[str] = None):
                     'link': promo.get('link', ''),
                     'info_channels': promo.get('info_channels', []),  # Уже включены в результат JOIN
                     'responsible_id': promo.get('responsible_id'),
-                    'responsible_name': promo.get('responsible_name')
+                    'responsible_name': promo.get('responsible_name'),
+                    'is_recurring': False  # Флаг для отличия от рекуррентных событий
                 }
                 
                 aggregated_data.append(event)
@@ -405,7 +410,38 @@ async def get_events(month: Optional[str] = None):
                 print(f"Ошибка при обработке промо-акции {promo.get('id')}: {str(row_error)}")
                 continue
         
-        print(f"✅ Загружено {len(aggregated_data)} событий за {month}")
+        # Добавляем рекуррентные события
+        for occurrence in occurrences:
+            try:
+                event = {
+                    'id': occurrence.get('id', ''),  # Уже содержит префикс "occ_"
+                    'promo_id': occurrence.get('promo_id'),
+                    'occurrence_id': occurrence.get('occurrence_id'),
+                    'occurrence_key': occurrence.get('occurrence_key'),
+                    'project': occurrence.get('project', ''),
+                    'promo_type': occurrence.get('promo_type', ''),
+                    'promo_kind': occurrence.get('promo_kind', ''),
+                    'start_date': occurrence.get('start_date', ''),
+                    'end_date': occurrence.get('end_date', ''),
+                    'name': occurrence.get('name', ''),
+                    'comment': occurrence.get('comment', ''),
+                    'segments': occurrence.get('segment', ''),
+                    'link': occurrence.get('link', ''),
+                    'info_channels': occurrence.get('info_channels', []),
+                    'responsible_id': occurrence.get('responsible_id'),
+                    'responsible_name': occurrence.get('responsible_name'),
+                    'is_recurring': True  # Флаг для отличия от обычных событий
+                }
+                
+                aggregated_data.append(event)
+            except Exception as row_error:
+                print(f"Ошибка при обработке рекуррентного события {occurrence.get('occurrence_id')}: {str(row_error)}")
+                continue
+        
+        # Сортируем по дате начала
+        aggregated_data.sort(key=lambda x: x.get('start_date', ''))
+        
+        print(f"✅ Загружено {len(aggregated_data)} событий за {month} (обычных: {len(promotions)}, рекуррентных: {len(occurrences)})")
         return {"events": aggregated_data}
         
     except Exception as e:
@@ -417,7 +453,7 @@ async def create_event(event: PromoEventCreate):
     """Создать промо события для всех проектов из списка (оптимизированная версия с batch insert)"""
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         # Валидация обязательных полей
         if not event.project or not event.promo_type or not event.name:
@@ -503,56 +539,7 @@ async def create_event(event: PromoEventCreate):
             raise e
         raise HTTPException(status_code=500, detail=f"Ошибка создания событий: {str(e)}")
 
-@app.get("/api/calendar/{year}/{month}")
-async def get_calendar_data(year: int, month: int):
-    """Получить данные календаря для конкретного месяца"""
-    try:
-        # Получаем все события
-        events_response = await get_events()
-        events = events_response["events"]
-        
-        # Фильтруем события по месяцу
-        _, num_days = calendar.monthrange(year, month)
-        
-        # Группируем события по проектам и типам
-        project = set()
-        events_by_project_type = {}
-        
-        for event in events:
-            project = event.get('project')
-            if not project:
-                continue
-            project.add(project)
-            
-            # Основное событие
-            promo_type = event.get('promo_type')
-            if promo_type and event_intersects_month(event, year, month):
-                key = (project, promo_type)
-                if key not in events_by_project_type:
-                    events_by_project_type[key] = []
-                events_by_project_type[key].append(event)
-            
-            # Информирования
-            for info in event.get('info_channels', []):
-                info_type = info.get('type')
-                info_project = info.get('project', project)
-                if info_type and info_intersects_month(info, year, month):
-                    project.add(info_project)
-                    key = (info_project, info_type)
-                    if key not in events_by_project_type:
-                        events_by_project_type[key] = []
-                    events_by_project_type[key].append(info)
-        
-        return {
-            "year": year,
-            "month": month,
-            "num_days": num_days,
-            "project": sorted(list(project)),
-            "events_by_project_type": events_by_project_type
-        }
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка получения календаря: {str(e)}")
+
 
 def event_intersects_month(event, year, month):
     """Проверяет, пересекает ли событие указанный месяц"""
@@ -610,7 +597,7 @@ async def update_event(event_id: str, event: PromoEventUpdate):
     """Обновить промо событие и его каналы информирования"""
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         promotion_id = int(event_id)
         
@@ -721,7 +708,7 @@ async def update_channel(channel_id: str, channel: InfoChannelUpdate):
     """Обновить канал информирования"""
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         informing_id = int(channel_id)
         promo_id = int(channel.promo_id) if channel.promo_id else None
@@ -754,33 +741,64 @@ async def update_channel(channel_id: str, channel: InfoChannelUpdate):
         raise HTTPException(status_code=500, detail=f"Ошибка обновления канала информирования: {str(e)}")
 
 @app.delete("/api/events/{event_id}")
-async def delete_event(event_id: str):
+async def delete_event(event_id: str, delete_request: DeleteEventRequest):
     """Удалить промо событие и все связанные с ним каналы информирования"""
     try:
+        print(f"🗑️ Запрос на удаление события ID: {event_id}, is_recurring: {delete_request.is_recurring}")
+        
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
-        promotion_id = int(event_id)
-        
-        # Проверяем существование промо-акции
-        existing_promotion = promo_repo.get_promotion_by_id(promotion_id)
-        if not existing_promotion:
-            raise HTTPException(status_code=404, detail="Промо событие не найдено")
-        
-        # Получаем количество связанных информирований для отчета
-        existing_channels = informing_repo.get_informing_by_promo_id(promotion_id)
-        channels_count = len(existing_channels)
-        
-        # Удаляем промо-акцию (информирования удалятся автоматически благодаря каскадному удалению в репозитории)
-        success = promo_repo.delete_promotion(promotion_id)
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Промо событие не найдено")
-        
-        return {
-            "message": "Промо событие и связанные каналы информирования успешно удалены",
-            "deleted_channels_count": channels_count
-        }
+        event_id_int = int(event_id)
+    
+        if delete_request.is_recurring:
+            # Удаляем рекуррентное событие из promotion_occurrences
+            print(f"🔍 Попытка удаления рекуррентного события с ID: {event_id_int}")
+            
+            # Проверяем существование вхождения по его ID
+            target_occurrence = occurrence_repo.get_occurrence_by_id(event_id_int)
+            
+            if not target_occurrence:
+                print(f"❌ Рекуррентное событие с ID {event_id_int} не найдено в базе данных")
+                raise HTTPException(status_code=404, detail="Рекуррентное событие не найдено")
+            
+            print(f"✅ Найдено рекуррентное событие: {target_occurrence}")
+            
+            # Удаляем вхождение
+            success = occurrence_repo.delete_occurrence(event_id_int)
+            
+            if not success:
+                raise HTTPException(status_code=404, detail="Рекуррентное событие не найдено")
+            
+            return {
+                "message": "Рекуррентное событие успешно удалено"
+            }
+        else:
+            # Удаляем обычное событие из promotions (текущая логика)
+            print(f"🔍 Попытка удаления обычного события с ID: {event_id_int}")
+            
+            # Проверяем существование промо-акции
+            existing_promotion = promo_repo.get_promotion_by_id(event_id_int)
+            if not existing_promotion:
+                print(f"❌ Обычное событие с ID {event_id_int} не найдено в таблице promotions")
+                raise HTTPException(status_code=404, detail="Промо событие не найдено")
+            
+            print(f"✅ Найдено обычное событие: {existing_promotion}")
+            
+            # Получаем количество связанных информирований для отчета
+            existing_channels = informing_repo.get_informing_by_promo_id(event_id_int)
+            channels_count = len(existing_channels)
+            
+            # Удаляем промо-акцию (информирования удалятся автоматически благодаря каскадному удалению в репозитории)
+            success = promo_repo.delete_promotion(event_id_int)
+            
+            if not success:
+                raise HTTPException(status_code=404, detail="Промо событие не найдено")
+            
+            return {
+                "message": "Промо событие и связанные каналы информирования успешно удалены",
+                "deleted_channels_count": channels_count
+            }
         
     except ValueError:
         raise HTTPException(status_code=400, detail="Неверный формат ID события")
@@ -794,7 +812,7 @@ async def delete_channel(channel_id: str):
     """Удалить канал информирования"""
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         informing_id = int(channel_id)
         
@@ -818,7 +836,7 @@ async def create_channel(channel: InfoChannelCreate):
     """Создать новый канал информирования"""
     try:
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repos()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
         
         # Валидация обязательных полей
         if not channel.type or not channel.project or not channel.name:

@@ -134,7 +134,7 @@ async def login(user_data: UserLogin, response: Response):
         logger.info(f"🔐 Попытка входа пользователя: {user_data.username}")
         
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Поиск пользователя в базе данных
         user = user_repo.get_user_by_credentials(user_data.username, user_data.password)
@@ -388,7 +388,7 @@ async def get_current_user_info(current_user: dict = Depends(get_current_user)):
         logger.info(f"👤 Запрос информации о пользователе: {current_user['username']}")
         
         # Получаем репозитории
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Получаем полную информацию о пользователе
         user = user_repo.get_user_by_id(current_user['user_id'])
@@ -466,7 +466,7 @@ async def check_auth_status(request: Request):
         logger.info(f"🔍 Проверка статуса аутентификации для пользователя: {username}")
         
         # Получаем репозитории для получения полной информации о пользователе
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Получаем полную информацию о пользователе
         user = user_repo.get_user_by_id(user_id)
