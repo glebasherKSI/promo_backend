@@ -26,18 +26,34 @@ class DatabaseConfig:
         self.database = os.getenv('MYSQL_DATABASE', 'promo_db')
         self.port = int(os.getenv('MYSQL_PORT', '3306'))
         
+        # self.config = {
+        #     'host': self.host,
+        #     'user': self.user,
+        #     'password': self.password,
+        #     'database': self.database,
+        #     'charset': 'utf8mb4',
+        #     'autocommit': False,
+        #     'port': self.port,
+        #     'pool_name': 'promo_pool',
+        #     'pool_size': 10,
+        #     'pool_reset_session': True
+        # }
         self.config = {
             'host': self.host,
             'user': self.user,
             'password': self.password,
             'database': self.database,
             'charset': 'utf8mb4',
-            'autocommit': False,
+            'autocommit': True,                # было False → теперь True
             'port': self.port,
-            'pool_name': 'promo_pool',
-            'pool_size': 10,
-            'pool_reset_session': True
+            'pool_name': f'promo_pool_{os.getpid()}',  # уникально для процесса
+            'pool_size': 5,                    # было 10 → 5 под 1 vCPU/1GB RAM
+            'pool_reset_session': True,
+            'connection_timeout': 5,           # быстрый fail при сетевых проблемах
+            'consume_results': True,           # чтобы не зависали незабранные результаты
+            'use_pure': True,                  # детерминированное поведение драйвера
         }
+
         
         print(f"🔧 Итоговая конфигурация БД:")
         print(f"   HOST: {self.config['host']}")
@@ -89,21 +105,51 @@ class DatabaseManager:
             logger.error("   - Доступен ли сервер по сети")
             raise
     
+    # @contextmanager
+    # def get_connection(self):
+    #     """Контекстный менеджер для получения соединения из пула"""
+    #     connection = None
+    #     try:
+    #         connection = self.pool.get_connection()
+    #         yield connection
+    #     except Exception as e:
+    #         if connection:
+    #             connection.rollback()
+    #         raise
+    #     finally:
+    #         if connection:
+    #             connection.close()
     @contextmanager
     def get_connection(self):
         """Контекстный менеджер для получения соединения из пула"""
         connection = None
         try:
             connection = self.pool.get_connection()
+
+            # здоровье соединения: если отвалилось — быстро переподключиться
+            try:
+                connection.ping(reconnect=True, attempts=1, delay=0)
+            except Exception:
+                connection.reconnect(attempts=1, delay=0)
+
+            # фиксируем сессию в UTC (п.5)
+            try:
+                cur_tz = connection.cursor()
+                cur_tz.execute("SET time_zone = '+00:00'")
+                cur_tz.close()
+            except Exception:
+                # не падаем из-за SET time_zone
+                pass
+
             yield connection
-        except Exception as e:
-            if connection:
+        except Exception:
+            if connection and getattr(connection, "in_transaction", False):
                 connection.rollback()
             raise
         finally:
             if connection:
                 connection.close()
-    
+
     @contextmanager
     def get_cursor(self, dictionary=True):
         """Контекстный менеджер для получения курсора"""
