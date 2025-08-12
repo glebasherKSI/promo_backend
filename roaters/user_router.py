@@ -43,7 +43,7 @@ async def get_user_by_login(login: str):
     """Получить данные пользователя по логину"""
     try:
         logger.info(f"🔍 Запрос пользователя по логину: '{login}'")
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Получаем пользователя по логину
         user = user_repo.get_user_by_login(login)
@@ -75,7 +75,7 @@ async def get_user_by_login(login: str):
 async def get_all_users():
     """Получить список всех пользователей (для диагностики)"""
     try:
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Получаем всех пользователей
         users = user_repo.get_all_users()
@@ -105,7 +105,7 @@ async def get_users_brief():
     """Получить краткий список всех пользователей (id, login, mail)"""
     try:
         logger.info("🔍 Запрос краткого списка пользователей")
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Получаем всех пользователей
         users = user_repo.get_all_users()
@@ -129,7 +129,7 @@ async def get_users_brief():
 async def update_user(user_id: int, user_data: UserUpdate):
     """Обновить данные пользователя по ID"""
     try:
-        promo_repo, informing_repo, user_repo = get_repositories()
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repositories()
         
         # Проверяем существование пользователя
         existing_user = user_repo.get_user_by_id(user_id)
