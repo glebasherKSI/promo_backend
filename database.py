@@ -781,6 +781,52 @@ class InformingRepository:
         except Exception as e:
             logger.warning(f"Не удалось распарсить дату '{date_str}': {e}")
             return None
+    
+    def get_standalone_channels_by_month(self, month: str) -> List[Dict[str, Any]]:
+        """Получить каналы информирования без привязки к промо-событиям за указанный месяц"""
+        try:
+            with self.db.get_cursor() as (cursor, connection):
+                # Парсим месяц
+                year, month_num = month.split('-')
+                year, month_num = int(year), int(month_num)
+                
+                query = """
+                    SELECT 
+                        i.id,
+                        i.informing_type as type,
+                        i.project,
+                        i.start_date,
+                        i.title as name,
+                        i.comment,
+                        i.segment as segments,
+                        i.link,
+                        i.promo_id
+                    FROM informing i
+                    WHERE i.promo_id IS NULL 
+                    AND i.start_date IS NOT NULL
+                    AND YEAR(i.start_date) = %s 
+                    AND MONTH(i.start_date) = %s
+                    ORDER BY i.start_date
+                """
+                
+                cursor.execute(query, (year, month_num))
+                channels = cursor.fetchall()
+                
+                # Конвертируем даты и форматируем данные
+                for channel in channels:
+                    if channel['start_date']:
+                        channel['start_date'] = channel['start_date'].isoformat() + "Z"
+                    
+                    # Устанавливаем значения по умолчанию для совместимости
+                    if not channel['segments']:
+                        channel['segments'] = 'СНГ'
+                
+                logger.info(f"✅ Загружено {len(channels)} каналов информирования без привязки за {month}")
+                return channels
+                
+        except Exception as e:
+            logger.error(f"Ошибка получения каналов информирования без привязки за {month}: {e}")
+            raise
 
 class OccurrenceRepository:
     """Репозиторий для работы с рекуррентными событиями (promotion_occurrences)"""

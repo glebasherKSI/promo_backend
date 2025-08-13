@@ -171,7 +171,7 @@ class InfoChannelUpdate(BaseModel):
     link: Optional[str] = ""
 
 class InfoChannelCreate(BaseModel):
-    type: Literal["E-mail", "MSGR", "BPS", "PUSH", "SMM", "Баннер", "Страница", "Новости"]
+    type: Literal["E-mail", "MSGR", "BPS", "PUSH", "SMM", "Баннер", "Страница", "Новости","PUSH SPORT","MSGR SPORT"]
     project: str
     start_date: str
     name: str
@@ -884,6 +884,56 @@ async def create_channel(channel: InfoChannelCreate):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Ошибка создания канала информирования: {str(e)}"
         )
+
+@app.get("/api/standalone-channels")
+async def get_standalone_channels(month: Optional[str] = None):
+    """Получить каналы информирования без привязки к промо-событиям за указанный месяц"""
+    try:
+        # Получаем репозитории
+        promo_repo, informing_repo, occurrence_repo, user_repo = get_repos()
+        
+        # Если месяц не указан, используем текущий месяц по умолчанию
+        if not month:
+            current_date = datetime.now()
+            month = f"{current_date.year}-{current_date.month:02d}"
+        
+        # Валидация формата месяца
+        try:
+            year, month_num = month.split('-')
+            year, month_num = int(year), int(month_num)
+            if not (1 <= month_num <= 12):
+                raise ValueError("Месяц должен быть от 1 до 12")
+        except (ValueError, IndexError):
+            raise HTTPException(
+                status_code=400, 
+                detail="Неверный формат месяца. Используйте формат YYYY-MM (например, 2025-09)"
+            )
+        
+        # Получаем каналы информирования без привязки к промо-событиям
+        channels = informing_repo.get_standalone_channels_by_month(month)
+        
+        # Форматируем ответ в нужную структуру
+        formatted_channels = []
+        for channel in channels:
+            formatted_channel = {
+                'id': channel.get('id'),
+                'type': channel.get('type', ''),
+                'project': channel.get('project', ''),
+                'start_date': channel.get('start_date', ''),
+                'name': channel.get('name', ''),
+                'comment': channel.get('comment', ''),
+                'segments': channel.get('segments', ''),
+                'promo_id': channel.get('promo_id'),  # Будет NULL для свободных каналов
+                'link': channel.get('link', '')
+            }
+            formatted_channels.append(formatted_channel)
+        
+        print(f"✅ Загружено {len(formatted_channels)} свободных каналов информирования за {month}")
+        return {"channels": formatted_channels}
+        
+    except Exception as e:
+        print(f"Критическая ошибка при получении свободных каналов: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка получения данных: {str(e)}")
 
 
 
