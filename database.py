@@ -8,6 +8,7 @@ import logging
 from dotenv import load_dotenv
 import calendar
 
+
 # Загружаем переменные окружения
 load_dotenv()
 
