@@ -125,14 +125,18 @@ jobs:
           '''
 
           # запустим через bash -lc, чтобы было нормальное окружение
-          stdin, stdout, stderr = ssh.exec_command(f"bash -lc {remote_cmd!r}", get_pty=True)
+          stdin, stdout, stderr = ssh.exec_command(
+          "bash -lc 'cat >/tmp/deploy.sh; bash /tmp/deploy.sh'",
+              get_pty=True
+          )
+          stdin.write(remote_cmd)
+          stdin.channel.shutdown_write()
+          
           out, err = stdout.read().decode(), stderr.read().decode()
           code = stdout.channel.recv_exit_status()
-
           print(out)
           if err.strip():
-            print(err, file=sys.stderr)
-
+              print(err, file=sys.stderr)
           ssh.close()
           sys.exit(code)
           EOF
