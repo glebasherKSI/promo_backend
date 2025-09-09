@@ -86,8 +86,8 @@ jobs:
           SERVICE="fastapi"
 
           # Создадим директорию под приложение и отдадим владельцу текущему пользователю
-          sudo mkdir -p "$APP_DIR"
-          sudo chown -R "$USER":"$USER" "$APP_DIR"
+          mkdir -p "$APP_DIR"
+          chown -R "$USER":"$USER" "$APP_DIR"
 
           # Распакуем во временную папку, затем синхронизируем
           TMP_DIR="$(mktemp -d /tmp/promo_release_XXXX)"
@@ -115,9 +115,9 @@ jobs:
           fi
 
           # Перезапуск systemd-юнита
-          sudo systemctl daemon-reload
-          sudo systemctl restart "$SERVICE"
-          sudo systemctl status "$SERVICE" --no-pager --full
+          systemctl daemon-reload
+          systemctl restart "$SERVICE"
+          systemctl status "$SERVICE" --no-pager --full
 
           # Уборка
           rm -rf "$TMP_DIR"
