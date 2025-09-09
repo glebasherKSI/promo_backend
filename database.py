@@ -8,7 +8,6 @@ import logging
 from dotenv import load_dotenv
 import calendar
 
-
 # Загружаем переменные окружения
 load_dotenv()
 
@@ -294,6 +293,11 @@ class PromoRepository:
             first_day = date(year, month_num, 1)
             last_day = date(year, month_num, calendar.monthrange(year, month_num)[1])
             
+            # Бизнес-таймзона для нормализации дат информирования → UTC
+            # Можно переопределить через переменную окружения BUSINESS_TZ (по умолчанию +03:00)
+            import os as _os
+            business_tz = _os.getenv('BUSINESS_TZ', '+03:00')
+            
             with self.db.get_cursor() as (cursor, connection):
                 # Запрос для получения промо-акций, которые пересекаются с указанным месяцем
                 query = """
@@ -331,8 +335,11 @@ class PromoRepository:
                         -- Промо-акция пересекает указанный месяц (начинается до и заканчивается после)
                         (p.start_date <= %s AND p.end_date >= %s)
                         OR
-                        -- Есть информирование в указанном месяце
-                        (i.start_date >= %s AND i.start_date <= %s)
+                        -- Есть информирование в указанном месяце (нормализуем к UTC через CONVERT_TZ)
+                        (
+                            i.start_date IS NOT NULL
+                            AND DATE(CONVERT_TZ(i.start_date, %s, '+00:00')) BETWEEN %s AND %s
+                        )
                     )
                     ORDER BY p.start_date DESC, i.start_date ASC
                 """
@@ -341,6 +348,7 @@ class PromoRepository:
                     first_day, last_day,  # start_date в месяце
                     first_day, last_day,  # end_date в месяце
                     first_day, last_day,  # пересечение месяца
+                    business_tz,          # исходная TZ данных информирования
                     first_day, last_day   # информирование в месяце
                 ))
                 rows = cursor.fetchall()
