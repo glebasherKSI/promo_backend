@@ -3,7 +3,7 @@ name: 🚀 Deploy FastAPI to Server
 on:
   push:
     branches:
-      - main  # или любая другая ветка
+      - main
 
 jobs:
   deploy:
@@ -11,14 +11,14 @@ jobs:
 
     steps:
       - name: 🔐 Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: ⚙️ Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.x'
+          python-version: '3.11'
 
-      - name: 📦 Install paramiko for SSH
+      - name: 📦 Install dependencies
         run: |
           pip install paramiko scp
 
@@ -26,36 +26,75 @@ jobs:
         env:
           SERVER_IP: ${{ secrets.SERVER_IP }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
-          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}  # Рекомендуется вместо пароля
         run: |
           python <<EOF
           import paramiko
           import os
+          import sys
 
           host = os.getenv("SERVER_IP")
           user = os.getenv("SERVER_USER")
-          password = os.getenv("SERVER_PASSWORD")
+          key = os.getenv("SSH_PRIVATE_KEY")
 
+          # Сохраняем ключ во временный файл
+          key_path = "/tmp/deploy_key"
+          with open(key_path, "w") as f:
+              f.write(key)
+              f.write("\n")
+          os.chmod(key_path, 0o600)
+
+          # Подключение по SSH с ключом
           ssh = paramiko.SSHClient()
           ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-          ssh.connect(hostname=host, username=user, password=password)
+          try:
+              ssh.connect(hostname=host, username=user, key_filename=key_path, timeout=10)
+          except Exception as e:
+              print(f"❌ SSH connection failed: {e}")
+              sys.exit(1)
 
-          stdin, stdout, stderr = ssh.exec_command("""
-            cd /root/promo_backend &&
-            git pull origin main &&
+          # Команда развёртывания
+          command = '''
+          set -e  # остановка при ошибке
+          cd /root/promo_backend || { echo "❌ Directory not found"; exit 1; }
 
-            source venv/bin/activate &&
+          echo "🔁 Pulling latest code..."
+          git pull origin main || { echo "❌ Git pull failed"; exit 1; }
 
-            pip install --upgrade pip &&
+          echo "📦 Activating virtual environment..."
+          if [ ! -f "venv/bin/activate" ]; then
+              echo "❌ Virtual environment not found. Run: python -m venv venv"
+              exit 1
+          fi
+          source venv/bin/activate
 
-            if [ -f requirements.txt ]; then
-              pip install -r requirements.txt --no-cache-dir
-            fi &&
+          echo "🔄 Upgrading pip..."
+          pip install --upgrade pip --no-cache-dir || exit 1
 
-            systemctl restart fastapi
-          """)
+          if [ -f "requirements.txt" ]; then
+              echo "📥 Installing requirements..."
+              pip install -r requirements.txt --no-cache-dir || { echo "❌ Pip install failed"; exit 1; }
+          fi
 
-          print(stdout.read().decode())
-          print(stderr.read().decode())
+          echo "🔄 Restarting FastAPI service..."
+          systemctl restart fastapi || { echo "❌ Failed to restart service"; exit 1; }
+
+          echo "✅ Deployment successful!"
+          '''
+
+          stdin, stdout, stderr = ssh.exec_command(command)
+          out = stdout.read().decode()
+          err = stderr.read().decode()
+
+          print("STDOUT:")
+          print(out)
+          print("STDERR:")
+          print(err)
+
+          if stderr.channel.recv_exit_status() != 0:
+              print("❌ Deployment failed!")
+              sys.exit(1)
+
+          ssh.close()
           EOF
 
