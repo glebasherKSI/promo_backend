@@ -28,115 +28,34 @@ jobs:
           SERVER_USER: ${{ secrets.SERVER_USER }}
           SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          python <<'EOF'
-          import os, sys, tarfile, tempfile, pathlib
+          python <<EOF
           import paramiko
+          import os
 
-          # --- Inputs from secrets (как у тебя было) ---
           host = os.getenv("SERVER_IP")
           user = os.getenv("SERVER_USER")
           password = os.getenv("SERVER_PASSWORD")
 
-          if not all([host, user, password]):
-            print("Missing SERVER_IP / SERVER_USER / SERVER_PASSWORD envs", file=sys.stderr)
-            sys.exit(1)
-
-          # --- Archive current repo (исключаем мусор) ---
-          workspace = os.getenv("GITHUB_WORKSPACE", ".")
-          workspace_path = pathlib.Path(workspace)
-          archive_local = pathlib.Path(tempfile.gettempdir()) / "release.tar.gz"
-
-          exclude_names = {".git", ".github", "venv", "__pycache__", "tests"}
-          def should_include(path: pathlib.Path) -> bool:
-            # исключаем каталоги/файлы по верхним именам и __pycache__ в поддеревьях
-            parts = set(path.parts)
-            if any(p in exclude_names for p in parts):
-              return False
-            return True
-
-          with tarfile.open(archive_local, "w:gz") as tar:
-            for root, dirs, files in os.walk(workspace_path):
-              # фильтруем каталоги на лету, чтобы не заходить внутрь
-              dirs[:] = [d for d in dirs if should_include(pathlib.Path(root, d))]
-              for f in files:
-                fp = pathlib.Path(root, f)
-                if should_include(fp):
-                  tar.add(fp, arcname=str(fp.relative_to(workspace_path)))
-
-          print(f"Created archive: {archive_local}")
-
-          # --- SSH + SFTP upload ---
           ssh = paramiko.SSHClient()
           ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-          ssh.connect(hostname=host, username=user, password=password, timeout=30)
+          ssh.connect(hostname=host, username=user, password=password)
 
-          sftp = ssh.open_sftp()
-          remote_archive = "/tmp/release.tar.gz"
-          sftp.put(str(archive_local), remote_archive)
-          sftp.close()
-          print(f"Uploaded archive to {remote_archive}")
+          stdin, stdout, stderr = ssh.exec_command("""
+            cd /root/promo_backend &&
+            git pull origin main &&
 
-          # --- Remote deploy script (без git pull) ---
-          remote_cmd = r'''
-          set -euo pipefail
+            source venv/bin/activate &&
 
-          export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+            pip install --upgrade pip &&
 
-          APP_DIR="/root/promo_backend"
-          SERVICE="fastapi"
+            if [ -f requirements.txt ]; then
+              pip install -r requirements.txt --no-cache-dir
+            fi &&
 
-          # Создадим директорию под приложение и отдадим владельцу текущему пользователю
-          mkdir -p "$APP_DIR"
-          chown -R "$USER":"$USER" "$APP_DIR"
+            systemctl restart fastapi
+          """)
 
-          # Распакуем во временную папку, затем синхронизируем
-          TMP_DIR="$(mktemp -d /tmp/promo_release_XXXX)"
-          tar -xzf /tmp/release.tar.gz -C "$TMP_DIR"
-
-          # Убедимся, что есть venv
-          if [ ! -d "$APP_DIR/venv" ]; then
-            python3 -m venv "$APP_DIR/venv"
-          fi
-
-          # Синхронизация кода (бережём venv)
-          if command -v rsync >/dev/null 2>&1; then
-            rsync -a --delete --exclude 'venv' "$TMP_DIR"/ "$APP_DIR"/
-          else
-            # если rsync нет — удалим всё, кроме venv, и скопируем
-            find "$APP_DIR" -mindepth 1 -maxdepth 1 ! -name 'venv' -exec rm -rf {} +
-            cp -a "$TMP_DIR"/. "$APP_DIR"/
-          fi
-
-          # Установка зависимостей
-          . "$APP_DIR/venv/bin/activate"
-          python -m pip install --upgrade pip wheel
-          if [ -f "$APP_DIR/requirements.txt" ]; then
-            pip install --no-cache-dir -r "$APP_DIR/requirements.txt"
-          fi
-
-          # Перезапуск systemd-юнита
-          systemctl daemon-reload
-          systemctl restart "$SERVICE"
-          systemctl status "$SERVICE" --no-pager --full
-
-          # Уборка
-          rm -rf "$TMP_DIR"
-          rm -f /tmp/release.tar.gz
-          '''
-
-          # запустим через bash -lc, чтобы было нормальное окружение
-          stdin, stdout, stderr = ssh.exec_command(
-          "bash -lc 'cat >/tmp/deploy.sh; bash /tmp/deploy.sh'",
-              get_pty=True
-          )
-          stdin.write(remote_cmd)
-          stdin.channel.shutdown_write()
-          
-          out, err = stdout.read().decode(), stderr.read().decode()
-          code = stdout.channel.recv_exit_status()
-          print(out)
-          if err.strip():
-              print(err, file=sys.stderr)
-          ssh.close()
-          sys.exit(code)
+          print(stdout.read().decode())
+          print(stderr.read().decode())
           EOF
+
